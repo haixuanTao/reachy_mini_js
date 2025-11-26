@@ -54,7 +54,7 @@ jobs:
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
-          huggingface-cli upload \
+          hf upload \
             --repo-type space \
             haixuantao/reachy-mini-webserial \
             ./dist \
