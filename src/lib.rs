@@ -43,8 +43,41 @@ pub fn main_js() -> Result<(), JsValue> {
 #[wasm_bindgen]
 extern "C" {
     fn alert(s: &str);
+    // Import the JS function we created
+    #[wasm_bindgen(js_namespace = window, catch)]
+    async fn requestSerialPort() -> Result<JsValue, JsValue>;
+}
+/// Generic serial port wrapper that works with both native WebSerial and polyfill
+pub struct GenericSerialPort {
+    inner: JsValue,
 }
 
+impl GenericSerialPort {
+    pub fn new(port: JsValue) -> Self {
+        Self { inner: port }
+    }
+
+    pub async fn open(&self, baud_rate: u32) -> Result<(), JsValue> {
+        let options = js_sys::Object::new();
+        js_sys::Reflect::set(&options, &"baudRate".into(), &baud_rate.into())?;
+
+        let open_fn = js_sys::Reflect::get(&self.inner, &"open".into())?;
+        let open_fn: js_sys::Function = open_fn.dyn_into()?;
+        let promise: Promise = open_fn.call1(&self.inner, &options)?.dyn_into()?;
+        JsFuture::from(promise).await?;
+        Ok(())
+    }
+
+    pub fn readable(&self) -> Result<web_sys::ReadableStream, JsValue> {
+        let readable = js_sys::Reflect::get(&self.inner, &"readable".into())?;
+        readable.dyn_into()
+    }
+
+    pub fn writable(&self) -> Result<web_sys::WritableStream, JsValue> {
+        let writable = js_sys::Reflect::get(&self.inner, &"writable".into())?;
+        writable.dyn_into()
+    }
+}
 #[wasm_bindgen]
 pub async fn test3() {
     let data = String::from_utf8(MOTOR_JSON.to_vec()).unwrap();
@@ -90,27 +123,20 @@ pub async fn test3() {
     let document = window.document().expect("should have a document on window");
     let body = document.body().expect("document should have a body");
 
-    // Get the Serial API (requires feature flag in web-sys)
-    let serial = navigator.serial();
-
-    // request_port() returns a Promise, convert to Future
-    let port_promise = serial.request_port();
-    let port: SerialPort = JsFuture::from(port_promise)
+    let port_js = requestSerialPort()
         .await
-        .unwrap()
-        .dyn_into()
-        .unwrap();
+        .expect("Failed to get serial port");
 
-    // Open the port with desired baud rate
-    let options = SerialOptions::new(1_000_000);
+    let port = GenericSerialPort::new(port_js);
 
-    let ok = JsFuture::from(port.open(&options)).await.unwrap();
+    // Open with baud rate
+    port.open(1_000_000).await.expect("Failed to open port");
     web_sys::console::log_1(&format!("port").into());
 
     // Now you can read/write
     // Get the readable stream
-    let readable = port.readable();
-    let writable = port.writable();
+    let readable = port.readable().unwrap();
+    let writable = port.writable().unwrap();
     let reader: ReadableStreamDefaultReader = readable.get_reader().dyn_into().unwrap();
     let writer: WritableStreamDefaultWriter = writable.get_writer().unwrap().dyn_into().unwrap();
     web_sys::console::log_1(&reader);
