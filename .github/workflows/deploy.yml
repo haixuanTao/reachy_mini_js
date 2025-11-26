@@ -6,6 +6,8 @@ on:
   pull_request:
     branches: [main]
   workflow_dispatch:
+env:
+  RUSTFLAGS: --cfg=web_sys_unstable_apis
 
 permissions:
   contents: read
