@@ -16,7 +16,7 @@ use crate::kinematics::Kinematics;
 #[global_allocator]
 static ALLOC: wee_alloc::WeeAlloc = wee_alloc::WeeAlloc::INIT;
 
-pub async fn sleep2(ms: u32) {
+pub async fn sleep(ms: u32) {
     let promise = Promise::new(&mut |resolve, _| {
         web_sys::window()
             .unwrap()
@@ -116,6 +116,18 @@ pub async fn test3() {
         );
     }
 
+    let wait_time = if web_sys::window()
+        .unwrap()
+        .navigator()
+        .user_agent()
+        .unwrap()
+        .to_lowercase()
+        .contains("android")
+    {
+        100
+    } else {
+        25
+    };
     // Test inverse kinematics
     let navigator = window().unwrap().navigator();
 
@@ -161,7 +173,7 @@ pub async fn test3() {
         )
         .await
         .unwrap();
-        sleep2(50).await;
+        sleep(wait_time).await;
         let result = JsFuture::from(reader.read()).await;
         match result {
             Err(err) => {
@@ -233,6 +245,7 @@ pub async fn test3() {
                 pose_roll.set_text_content(Some(&format!("{:.2}", roll_deg)));
                 pose_pitch.set_text_content(Some(&format!("{:.2}", pitch_deg)));
                 pose_yaw.set_text_content(Some(&format!("{:.2}", yaw_deg)));
+                sleep(wait_time).await;
             }
         }
     }
