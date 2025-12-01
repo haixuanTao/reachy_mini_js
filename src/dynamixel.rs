@@ -1,3 +1,5 @@
+use wasm_bindgen::JsValue;
+
 const CRC_TABLE: [u16; 256] = [
     0x0000, 0x8005, 0x800F, 0x000A, 0x801B, 0x001E, 0x0014, 0x8011, 0x8033, 0x0036, 0x003C, 0x8039,
     0x0028, 0x802D, 0x8027, 0x0022, 0x8063, 0x0066, 0x006C, 0x8069, 0x0078, 0x807D, 0x8077, 0x0072,
@@ -46,9 +48,9 @@ pub const SYNC_READ_POSITION: [u8; 22] = [
 ];
 
 /// Parse a single status packet and return (motor_id, position) if valid
-pub fn parse_status_packet(data: &[u8], offset: usize) -> Option<(u8, i32)> {
+pub fn parse_status_packet(data: &[u8], offset: usize) -> Result<(u8, i32), JsValue> {
     if offset + 15 > data.len() {
-        return None;
+        return Err(JsValue::from_str("Not enough data for status packet"));
     }
 
     // Check header
@@ -57,7 +59,7 @@ pub fn parse_status_packet(data: &[u8], offset: usize) -> Option<(u8, i32)> {
         || data[offset + 2] != 0xFD
         || data[offset + 3] != 0x00
     {
-        return None;
+        return Err(JsValue::from_str("Invalid header in status packet"));
     }
 
     let motor_id = data[offset + 4];
@@ -66,12 +68,12 @@ pub fn parse_status_packet(data: &[u8], offset: usize) -> Option<(u8, i32)> {
 
     // Status packet has instruction 0x55
     if instruction != 0x55 {
-        return None;
+        return Err(JsValue::from_str("Invalid instruction in status packet"));
     }
 
     // Check we have enough data (header=4 + id=1 + len=2 + instr=1 + err=1 + data=4 + crc=2 = 15)
     if length != 8 {
-        return None;
+        return Err(JsValue::from_str("Invalid length in status packet"));
     }
 
     let error = data[offset + 8];
@@ -83,7 +85,7 @@ pub fn parse_status_packet(data: &[u8], offset: usize) -> Option<(u8, i32)> {
         | ((data[offset + 11] as i32) << 16)
         | ((data[offset + 12] as i32) << 24);
 
-    Some((motor_id, pos))
+    Ok((motor_id, pos))
 }
 
 pub fn build_sync_write_torque(motor_ids: &[u8], enable: bool) -> Vec<u8> {
@@ -108,6 +110,35 @@ pub fn build_sync_write_torque(motor_ids: &[u8], enable: bool) -> Vec<u8> {
     for &id in motor_ids {
         packet.push(id);
         packet.push(value);
+    }
+
+    let crc = calculate_crc(&packet);
+    packet.push((crc & 0xFF) as u8);
+    packet.push(((crc >> 8) & 0xFF) as u8);
+
+    packet
+}
+
+pub fn build_sync_current_position(motor_ids: &[u8]) -> Vec<u8> {
+    let len = 7 + motor_ids.len() as u16; // instr + addr(2) + data_len(2) + (id + value) * n
+
+    let mut packet = vec![
+        0xFF,
+        0xFF,
+        0xFD,
+        0x00,
+        0xFE,
+        (len & 0xFF) as u8,
+        ((len >> 8) & 0xFF) as u8,
+        0x82, // SYNC_READ
+        0x84,
+        0x00, // Address 132 (Present Position)
+        0x04,
+        0x00, // Data length = 4 bytes
+    ];
+
+    for &id in motor_ids {
+        packet.push(id);
     }
 
     let crc = calculate_crc(&packet);

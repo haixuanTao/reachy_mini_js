@@ -51,6 +51,7 @@ export async function requestSerialPort(mode = 'auto', forceNew = false) {
     const port = new PolyfillSerialPort(device);
     
     port._isPolyfill = true;
+    await port.open({ baudRate: 1000000 });
     cachedPort = port;
     return port;
   }
@@ -63,14 +64,9 @@ export async function requestSerialPort(mode = 'auto', forceNew = false) {
   }
   
   const port = await navigator.serial.requestPort();
+  await port.open({ baudRate: 1000000 });
   port._isPolyfill = false;
   cachedPort = port;
-  document.getElementById('btn-fk').disabled = false;
-  document.getElementById('btn-torque-off').disabled = false;
-  document.getElementById('btn-torque-on').disabled = false;
-  document.getElementById('btn-connect').disabled = true;
-  document.getElementById('btn-record').disabled = false;
-  document.getElementById('btn-replay').disabled = false;
 
   return port;
 }

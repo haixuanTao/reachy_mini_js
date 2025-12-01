@@ -1,40 +1,45 @@
 mod dynamixel;
 mod kinematics;
 use std::cell::RefCell;
-
-use futures_util::StreamExt;
-use js_sys::{Boolean, Promise};
-use serde::Deserialize;
-use wasm_bindgen::prelude::*;
-use wasm_bindgen_futures::JsFuture;
-use web_sys::{console, ReadableStreamDefaultReader, WritableStreamDefaultWriter};
+use std::pin::{pin, Pin};
+use std::sync::{Arc, LazyLock, Mutex};
 
 use crate::dynamixel::{
-    build_sync_write_position_radians, build_sync_write_torque, parse_status_packet,
-    SYNC_READ_POSITION,
+    build_sync_current_position, build_sync_write_position_radians, build_sync_write_torque,
+    parse_status_packet,
 };
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use crate::kinematics::Kinematics;
+use futures_util::{AsyncReadExt, SinkExt};
+use futures_util::{StreamExt, TryStreamExt};
+use gloo::net::websocket::futures::WebSocket;
+use gloo::net::websocket::Message;
+use js_sys::{Boolean, Promise};
+use serde::Deserialize;
+
+use wasm_bindgen::prelude::*;
+use wasm_bindgen_futures::JsFuture;
+use web_sys::{
+    console, ReadableStream, ReadableStreamDefaultReader, WritableStream,
+    WritableStreamDefaultWriter,
+};
 
 thread_local! {
     static PLAYBACK_FRAMES: RefCell<Vec<Vec<f32>>> = RefCell::new(Vec::new());
+    static generic_port: RefCell<Option<Arc<GenericPort>>> = RefCell::new(None);
 }
+static STOP_FLAG: AtomicBool = AtomicBool::new(false);
 
-// When the `wee_alloc` feature is enabled, this uses `wee_alloc` as the global
-// allocator.
-//
-// If you don't want to use `wee_alloc`, you can safely delete this.
-#[cfg(feature = "wee_alloc")]
-#[global_allocator]
-static ALLOC: wee_alloc::WeeAlloc = wee_alloc::WeeAlloc::INIT;
-
-pub async fn sleep(ms: u32) {
+pub async fn sleep(ms: u32) -> Result<(), JsValue> {
     let promise = Promise::new(&mut |resolve, _| {
         web_sys::window()
             .unwrap()
             .set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, ms as i32)
             .unwrap();
     });
-    JsFuture::from(promise).await.unwrap();
+    JsFuture::from(promise).await?;
+    Ok(())
 }
 
 // This is like the `main` function, except for JavaScript.
@@ -66,6 +71,9 @@ extern "C" {
 
     #[wasm_bindgen(js_name = isOpen)]
     async fn is_open() -> Boolean;
+
+    #[wasm_bindgen(js_name = updatePose)]
+    fn update_pose(x: f32, y: f32, z: f32, roll: f32, pitch: f32, yaw: f32);
 }
 /// Generic serial port wrapper that works with both native WebSerial and polyfill
 pub struct GenericSerialPort {
@@ -98,11 +106,155 @@ impl GenericSerialPort {
         writable.dyn_into()
     }
 }
+pub struct GenericPort {
+    connection: Connection,
+}
+
+enum Connection {
+    WebSerial {
+        reader: ReadableStreamDefaultReader,
+        writer: WritableStreamDefaultWriter,
+    },
+    WebSocket {
+        sender: Arc<Mutex<futures_util::stream::SplitSink<WebSocket, Message>>>,
+        receiver: Arc<Mutex<futures_util::stream::SplitStream<WebSocket>>>,
+    },
+}
+
+impl GenericPort {
+    pub async fn new() -> Result<Self, JsValue> {
+        // first try websocket
+        let url = "ws://localhost:8000/api/move/ws/raw/write";
+        if let Ok(ws) = Self::from_websocket(url).await {
+            return Ok(ws);
+        } else {
+            web_sys::console::log_1(
+                &format!("WebSocket connection failed, trying WebSerial").into(),
+            );
+            return Self::from_webserial().await;
+        }
+    }
+    pub async fn from_websocket(url: &str) -> Result<Self, JsValue> {
+        let ws = WebSocket::open(url)
+            .map_err(|err| JsValue::from_str(&format!("Failed to open WebSocket: {:#?}", err)))?;
+        loop {
+            match ws.state() {
+                gloo::net::websocket::State::Connecting => {
+                    // Wait until the connection is open
+                    // In a real application, you might want to add a timeout here
+                    sleep(10).await?;
+                }
+                gloo::net::websocket::State::Open => break,
+                gloo::net::websocket::State::Closed => {
+                    return Err(JsValue::from_str("WebSocket connection closed"));
+                }
+                gloo::net::websocket::State::Closing => {
+                    return Err(JsValue::from_str("WebSocket connection closing"));
+                }
+            }
+        }
+        let (sender, receiver) = ws.split();
+        Ok(Self {
+            connection: Connection::WebSocket {
+                sender: Arc::new(Mutex::new(sender)),
+                receiver: Arc::new(Mutex::new(receiver)),
+            },
+        })
+    }
+
+    pub async fn from_webserial() -> Result<Self, JsValue> {
+        let port = requestSerialPort().await?;
+        web_sys::console::log_1(&format!("ok so far").into());
+
+        let readable: ReadableStream =
+            js_sys::Reflect::get(&port, &"readable".into())?.dyn_into()?;
+        let writable: WritableStream =
+            js_sys::Reflect::get(&port, &"writable".into())?.dyn_into()?;
+        web_sys::console::log_1(&format!("ok so far 2").into());
+        let reader: ReadableStreamDefaultReader = readable.get_reader().dyn_into()?;
+        let writer: WritableStreamDefaultWriter = writable.get_writer()?.dyn_into()?;
+        Ok(Self {
+            connection: Connection::WebSerial { reader, writer },
+        })
+    }
+
+    pub async fn read(&self) -> Result<Vec<u8>, JsValue> {
+        match &self.connection {
+            Connection::WebSerial { ref reader, .. } => {
+                let result = JsFuture::from(reader.read()).await?;
+                let value = js_sys::Reflect::get(&result, &"value".into())?;
+                let data = js_sys::Uint8Array::from(value);
+                Ok(data.to_vec())
+            }
+            Connection::WebSocket { receiver, .. } => {
+                if let Some(message) = receiver
+                    .try_lock()
+                    .map_err(|e| {
+                        JsValue::from_str(&format!("Failed to lock WebSocket receiver: {:#?}", e))
+                    })?
+                    .try_next()
+                    .await
+                    .map_err(|err| {
+                        JsValue::from_str(&format!("Failed to read WebSocket message: {:#?}", err))
+                    })?
+                {
+                    match message {
+                        Message::Bytes(bytes) => Ok(bytes),
+                        _ => Err(JsValue::from_str("Unexpected WebSocket message type")),
+                    }
+                } else {
+                    Err(JsValue::from_str("WebSocket closed"))
+                }
+            }
+        }
+    }
+
+    pub async fn write(&self, packet: &[u8]) -> Result<(), JsValue> {
+        match self.connection {
+            Connection::WebSerial { ref writer, .. } => {
+                JsFuture::from(writer.write_with_chunk(&js_sys::Uint8Array::from(packet).into()))
+                    .await?;
+                Ok(())
+            }
+            Connection::WebSocket { ref sender, .. } => {
+                sender
+                    .try_lock()
+                    .map_err(|e| {
+                        JsValue::from_str(&format!("Failed to lock WebSocket sender: {:#?}", e))
+                    })?
+                    .send(Message::Bytes(packet.to_vec()))
+                    .await
+                    .map_err(|err| {
+                        JsValue::from_str(&format!("Failed to send WebSocket message: {:#?}", err))
+                    })?;
+                Ok(())
+            }
+        }
+    }
+
+    pub async fn write_read(&self, packet: &[u8], wait: Option<u32>) -> Result<Vec<u8>, JsValue> {
+        self.write(packet).await?;
+        sleep(10).await?;
+        let read = self.read().await;
+        read
+    }
+
+    pub fn release_lock(&self) -> Result<(), JsValue> {
+        match &self.connection {
+            Connection::WebSerial { reader, writer, .. } => {
+                reader.release_lock();
+                writer.release_lock();
+                Ok(())
+            }
+            Connection::WebSocket { .. } => Ok(()),
+        }
+    }
+}
 
 #[wasm_bindgen]
-pub async fn fk(duration: Option<f64>) {
-    let data = String::from_utf8(MOTOR_JSON.to_vec()).unwrap();
-    let motors: Vec<Motor> = serde_json::from_str(&data).expect("JSON was not well-formatted");
+pub async fn fk(duration: Option<f64>) -> Result<(), JsValue> {
+    let motors: Vec<Motor> =
+        serde_json::from_str(&MOTOR_JSON).expect("JSON was not well-formatted");
     let mut kinematics = Kinematics::new(0.038, 0.09);
 
     for motor in motors {
@@ -139,49 +291,24 @@ pub async fn fk(duration: Option<f64>) {
 
     let wait_time = 10;
     // Test inverse kinematics
-    let window = web_sys::window().expect("no global `window` exists");
-    let document = window.document().expect("should have a document on window");
-
-    let port_js = get_cached_port();
-
-    let port = GenericSerialPort::new(port_js);
-
     // Now you can read/write
     // Get the readable stream
-    let readable = port.readable().unwrap();
-    let writable = port.writable().unwrap();
-    let reader: ReadableStreamDefaultReader = readable.get_reader().dyn_into().unwrap();
-    let writer: WritableStreamDefaultWriter = writable.get_writer().unwrap().dyn_into().unwrap();
-    // Read data in a loop
-    let motors = vec![1, 2, 3, 4, 5, 6, 21, 22]
-        .iter()
-        .map(|i| document.get_element_by_id(&format!("motor-{i}")).unwrap())
-        .collect::<Vec<_>>();
-    let pose_x = document.get_element_by_id("pose-x").unwrap();
-    let pose_y = document.get_element_by_id("pose-y").unwrap();
-    let pose_z = document.get_element_by_id("pose-z").unwrap();
-    let pose_roll = document.get_element_by_id("pose-roll").unwrap();
-    let pose_pitch = document.get_element_by_id("pose-pitch").unwrap();
-    let pose_yaw = document.get_element_by_id("pose-yaw").unwrap();
-    let btn_torque_on = document.get_element_by_id("btn-torque-on").unwrap();
-    let btn_torque_off = document.get_element_by_id("btn-torque-off").unwrap();
-    let btn_record = document.get_element_by_id("btn-record").unwrap();
-    let btn_replay = document.get_element_by_id("btn-replay").unwrap();
-    btn_torque_off.set_attribute("disabled", "true").unwrap();
-    btn_torque_on.set_attribute("disabled", "true").unwrap();
-    btn_record.set_attribute("disabled", "true").unwrap();
-    btn_replay.set_attribute("disabled", "true").unwrap();
+    // let pose_x = document.get_element_by_id("pose-x")?;
+    // let pose_y = document.get_element_by_id("pose-y")?;
+    // let pose_z = document.get_element_by_id("pose-z")?;
+    // let pose_roll = document.get_element_by_id("pose-roll")?;
+    // let pose_pitch = document.get_element_by_id("pose-pitch")?;
+    // let pose_yaw = document.get_element_by_id("pose-yaw")?;
+    let port = generic_port
+        .with_borrow(|port| port.clone())
+        .ok_or_else(|| JsValue::from_str("Reachy not connected"))?;
     let mut results = vec![0.0; 8];
     let start_time = js_sys::Date::now();
+    STOP_FLAG.store(false, Ordering::Relaxed);
+    PLAYBACK_FRAMES.with_borrow_mut(|frames| frames.clear());
     loop {
-        // sleep
-        JsFuture::from(
-            writer.write_with_chunk(&js_sys::Uint8Array::from(&SYNC_READ_POSITION[..]).into()),
-        )
-        .await
-        .unwrap();
-        sleep(wait_time).await;
-        let result = JsFuture::from(reader.read()).await;
+        let ping_current = build_sync_current_position(&[11, 12, 13, 14, 15, 16, 17, 18]);
+        let result = port.write_read(&ping_current, Some(wait_time)).await;
         match result {
             Err(err) => {
                 web_sys::console::log_1(
@@ -190,38 +317,22 @@ pub async fn fk(duration: Option<f64>) {
             }
             Ok(res) => {
                 // Manufacture the element we're gonna append
-                let done = js_sys::Reflect::get(&res, &"done".into())
-                    .unwrap()
-                    .as_bool()
-                    .unwrap_or(true);
-                let value = js_sys::Reflect::get(&res, &"value".into()).unwrap();
-                let data = js_sys::Uint8Array::from(value);
-                let bytes = data.to_vec();
                 // Parse motor positions
                 for motor_id in 0..8 {
-                    if let Some((id, pos)) = parse_status_packet(&bytes, motor_id * 15) {
-                        let id = if id == 21 {
-                            6
-                        } else if id == 22 {
-                            7
-                        } else {
-                            id as usize - 1
-                        };
-                        results[id] = raw_to_radians(pos);
-                        let val = &motors[id];
-                        val.set_text_content(Some(
-                            (raw_to_radians(pos) * 360. / (2. * std::f32::consts::PI))
-                                .round()
-                                .to_string()
-                                .as_str(),
-                        ));
-                    } else {
-                        web_sys::console::log_1(
-                            &format!("Failed to parse packet for motor {}", motor_id + 1).into(),
-                        );
-                    }
-                    if done {
-                        break;
+                    match parse_status_packet(&res, motor_id * 15) {
+                        Ok((id, pos)) => {
+                            results[id as usize - 11] = raw_to_radians(pos);
+                        }
+                        Err(err) => {
+                            web_sys::console::log_1(
+                                &format!(
+                                    "Failed to parse packet for motor {}, err: {:#?}",
+                                    motor_id + 1,
+                                    err
+                                )
+                                .into(),
+                            );
+                        }
                     }
                 }
                 if let Some(dur) = duration {
@@ -243,9 +354,9 @@ pub async fn fk(duration: Option<f64>) {
                 let x = -t[(0, 3)] * 1000.; // Reverse X axis because don't know
                 let y = t[(1, 3)] * 1000.;
                 let z = t[(2, 3)] * 1000.; //- HEAD_Z_OFFSET * 1000.;
-                pose_x.set_text_content(Some(&format!("{:.2}", x)));
-                pose_y.set_text_content(Some(&format!("{:.2}", y)));
-                pose_z.set_text_content(Some(&format!("{:.2}", z)));
+                                           // pose_x.set_text_content(Some(&format!("{:.2}", x)));
+                                           // pose_y.set_text_content(Some(&format!("{:.2}", y)));
+                                           // pose_z.set_text_content(Some(&format!("{:.2}", z)));
 
                 let r = t.fixed_view::<3, 3>(0, 0);
                 // Euler XYZ: Roll (X), Pitch (Y), Yaw (Z)
@@ -266,94 +377,94 @@ pub async fn fk(duration: Option<f64>) {
                 let roll_deg = roll.to_degrees();
                 let pitch_deg = pitch.to_degrees();
                 let yaw_deg = yaw.to_degrees();
+                update_pose(x, y, z, roll_deg, pitch_deg, yaw_deg);
 
-                pose_roll.set_text_content(Some(&format!("{:.2}", roll_deg)));
-                pose_pitch.set_text_content(Some(&format!("{:.2}", pitch_deg)));
-                pose_yaw.set_text_content(Some(&format!("{:.2}", yaw_deg)));
-                sleep(wait_time).await;
+                // pose_roll.set_text_content(Some(&format!("{:.2}", roll_deg)));
+                // pose_pitch.set_text_content(Some(&format!("{:.2}", pitch_deg)));
+                // pose_yaw.set_text_content(Some(&format!("{:.2}", yaw_deg)));
+                sleep(wait_time).await?;
+
+                let stop = STOP_FLAG.load(Ordering::Relaxed);
+                if stop {
+                    break;
+                }
             }
         }
     }
-
-    reader.release_lock();
-    writer.release_lock();
-    btn_torque_off.remove_attribute("disabled").unwrap();
-    btn_torque_on.remove_attribute("disabled").unwrap();
-    btn_record.remove_attribute("disabled").unwrap();
-    btn_replay.remove_attribute("disabled").unwrap();
     web_sys::console::log_1(&format!("recording {}", 0).into());
+
+    Ok(())
 }
 
 #[wasm_bindgen]
-pub async fn torque_off() {
-    let port_js = get_cached_port();
-
-    let port = GenericSerialPort::new(port_js);
-
-    // Now you can read/write
-    // Get the readable stream
-    let torque_off = build_sync_write_torque(&[1, 2, 3, 4, 5, 6, 21, 22], false);
-    let writable = port.writable().unwrap();
-    let writer: WritableStreamDefaultWriter = writable.get_writer().unwrap().dyn_into().unwrap();
-
-    // sleep
-    JsFuture::from(writer.write_with_chunk(&js_sys::Uint8Array::from(&torque_off[..]).into()))
-        .await
-        .unwrap();
-    writer.release_lock();
-}
-
-#[wasm_bindgen]
-pub async fn replay() {
-    torque_on().await;
-    let port_js = get_cached_port();
-
-    let port = GenericSerialPort::new(port_js);
-
-    let writable = port.writable().unwrap();
-    let writer: WritableStreamDefaultWriter = writable.get_writer().unwrap().dyn_into().unwrap();
+pub async fn replay() -> Result<(), JsValue> {
+    web_sys::console::log_1(&format!("torque? {}", 0).into());
+    torque_on().await?;
+    web_sys::console::log_1(&format!("torque ok {}", 0).into());
     let frames = PLAYBACK_FRAMES.with_borrow(|frames| frames.clone());
+
+    STOP_FLAG.store(false, Ordering::Relaxed);
+
+    let port = generic_port
+        .with_borrow(|port| port.clone())
+        .ok_or_else(|| JsValue::from_str("Reachy not connected"))?;
     for frame in frames.iter() {
-        let packet = build_sync_write_position_radians(&vec![1, 2, 3, 4, 5, 6, 21, 22], frame);
-        JsFuture::from(writer.write_with_chunk(&js_sys::Uint8Array::from(&packet[..]).into()))
-            .await
-            .unwrap();
-        sleep(20).await;
+        web_sys::console::log_1(&format!("Replaying {}", 0).into());
+
+        let packet =
+            build_sync_write_position_radians(&vec![11, 12, 13, 14, 15, 16, 17, 18], frame);
+        port.write(&packet[..]).await?;
+
+        web_sys::console::log_1(&format!("ok {}", 0).into());
+        sleep(20).await?;
+        let stop = STOP_FLAG.load(Ordering::Relaxed);
+        if stop {
+            break;
+        }
     }
-    writer.release_lock();
-    torque_off().await;
+    torque_off().await?;
+    Ok(())
 }
 
 #[wasm_bindgen]
-pub async fn connect() {
-    let port_js = requestSerialPort()
-        .await
-        .expect("Failed to get serial port");
-
-    let port = GenericSerialPort::new(port_js);
-
-    port.open(1_000_000).await.expect("Failed to open port");
+pub async fn stop() -> Result<(), JsValue> {
+    STOP_FLAG.store(true, Ordering::Relaxed);
+    Ok(())
 }
 
 #[wasm_bindgen]
-pub async fn torque_on() {
-    let port_js = get_cached_port();
+pub async fn record() -> Result<(), JsValue> {
+    fk(Some(10_000.0)).await
+}
 
-    let port = GenericSerialPort::new(port_js);
+#[wasm_bindgen]
+pub async fn connect() -> Result<(), JsValue> {
+    let port = GenericPort::new().await?;
 
-    // Now you can read/write
-    // Get the readable stream
-    let torque_on = build_sync_write_torque(&[1, 2, 3, 4, 5, 6, 21, 22], true);
+    generic_port.set(Some(Arc::new(port)));
+    Ok(())
+}
 
-    let writable = port.writable().unwrap();
+#[wasm_bindgen]
+pub async fn torque_on() -> Result<(), JsValue> {
+    let torque_on = build_sync_write_torque(&[11, 12, 13, 14, 15, 16, 17, 18], true);
 
-    let writer: WritableStreamDefaultWriter = writable.get_writer().unwrap().dyn_into().unwrap();
+    let port = generic_port
+        .with_borrow(|port| port.clone())
+        .ok_or_else(|| JsValue::from_str("Reachy not connected"))?;
+    port.write(&torque_on).await?;
 
-    // sleep
-    JsFuture::from(writer.write_with_chunk(&js_sys::Uint8Array::from(&torque_on[..]).into()))
-        .await
-        .unwrap();
-    writer.release_lock();
+    Ok(())
+}
+
+#[wasm_bindgen]
+pub async fn torque_off() -> Result<(), JsValue> {
+    let torque_off = build_sync_write_torque(&[11, 12, 13, 14, 15, 16, 17, 18], false);
+    let port = generic_port
+        .with_borrow(|port| port.clone())
+        .ok_or_else(|| JsValue::from_str("Reachy not connected"))?;
+    port.write(&torque_off).await?;
+    Ok(())
 }
 
 #[allow(non_snake_case)]
@@ -363,15 +474,10 @@ struct Motor {
     T_motor_world: Vec<Vec<f32>>,
     solution: f32,
 }
-static MOTOR_JSON: [u8; include_bytes!("motors.json").len()] = *include_bytes!("motors.json");
+static MOTOR_JSON: &str = include_str!("motors.json");
 
 /// Convert raw motor position (0-4095) to radians
 /// XL330: 0-4095 maps to 0-360 degrees, center (2048) = 0 radians
 fn raw_to_radians(raw: i32) -> f32 {
     ((raw - 2048) as f32 / 4096.0) * 2.0 * std::f32::consts::PI
-}
-
-// Convert radians to raw
-fn radians_to_raw(radians: f32) -> i32 {
-    (radians * 4096.0 / (2.0 * std::f32::consts::PI) + 2048.0) as i32
 }

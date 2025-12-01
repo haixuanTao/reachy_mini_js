@@ -3,553 +3,521 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Reachy Mini - Stewart Platform</title>
+    <title>Reachy Mini</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Source+Sans+3:wght@400;500;600&display=swap" rel="stylesheet">
     <style>
         :root {
-            --bg-dark: #0a0a0f;
-            --bg-card: #12121a;
-            --bg-card-hover: #1a1a24;
-            --accent: #00d4ff;
-            --accent-dim: #00a0c0;
-            --success: #00ff88;
-            --warning: #ffaa00;
-            --error: #ff4466;
-            --text: #ffffff;
-            --text-dim: #888899;
-            --border: #2a2a3a;
+            --white: #ffffff;
+            --gray-50: #f9fafb;
+            --gray-100: #f3f4f6;
+            --gray-200: #e5e7eb;
+            --gray-300: #d1d5db;
+            --gray-400: #9ca3af;
+            --gray-500: #6b7280;
+            --gray-600: #4b5563;
+            --gray-700: #374151;
+            --gray-800: #1f2937;
+            --green-500: #22c55e;
+            --red-500: #ef4444;
+            --blue-500: #3b82f6;
         }
 
-        * {
-            box-sizing: border-box;
-            margin: 0;
-            padding: 0;
-        }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
 
         body {
-            font-family: 'SF Pro Display', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            background: var(--bg-dark);
-            color: var(--text);
+            font-family: 'Source Sans 3', -apple-system, BlinkMacSystemFont, sans-serif;
+            background: var(--white);
+            color: var(--gray-800);
             min-height: 100vh;
-            overflow-x: hidden;
+            line-height: 1.5;
         }
 
         /* Header */
         .header {
-            background: linear-gradient(180deg, #15151f 0%, var(--bg-dark) 100%);
-            border-bottom: 1px solid var(--border);
-            padding: 20px 30px;
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-        }
-
-        .logo {
-            display: flex;
-            align-items: center;
-            gap: 12px;
-        }
-
-        .logo-icon {
-            width: 40px;
-            height: 40px;
-            background: linear-gradient(135deg, var(--accent) 0%, #0066ff 100%);
-            border-radius: 10px;
+            background: var(--white);
+            border-bottom: 1px solid var(--gray-200);
+            padding: 12px 16px;
             display: flex;
             align-items: center;
             justify-content: center;
-            font-size: 20px;
+            position: sticky;
+            top: 0;
+            z-index: 100;
         }
 
-        .logo-text {
-            font-size: 20px;
-            font-weight: 600;
-            letter-spacing: -0.5px;
-        }
-
-        .logo-text span {
-            color: var(--accent);
-        }
-
-        /* Status Badge */
-        .status-badge {
+        .header-controls {
             display: flex;
             align-items: center;
-            gap: 8px;
-            padding: 8px 16px;
-            background: var(--bg-card);
-            border: 1px solid var(--border);
-            border-radius: 20px;
-            font-size: 13px;
-        }
-
-        .status-dot {
-            width: 8px;
-            height: 8px;
-            border-radius: 50%;
-            background: var(--text-dim);
-            transition: all 0.3s;
-        }
-
-        .status-dot.connected {
-            background: var(--success);
-            box-shadow: 0 0 10px var(--success);
-        }
-
-        .status-dot.error {
-            background: var(--error);
-            box-shadow: 0 0 10px var(--error);
-        }
-
-        /* Main Layout */
-        .main {
-            max-width: 1200px;
-            margin: 0 auto;
-            padding: 30px;
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 24px;
-        }
-
-        @media (max-width: 900px) {
-            .main {
-                grid-template-columns: 1fr;
-            }
-        }
-
-        /* Cards */
-        .card {
-            background: var(--bg-card);
-            border: 1px solid var(--border);
-            border-radius: 16px;
-            overflow: hidden;
-        }
-
-        .card-header {
-            padding: 16px 20px;
-            border-bottom: 1px solid var(--border);
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-        }
-
-        .card-title {
-            font-size: 14px;
-            font-weight: 600;
-            text-transform: uppercase;
-            letter-spacing: 1px;
-            color: var(--text-dim);
-        }
-
-        .card-body {
-            padding: 20px;
-        }
-
-        /* Pose Display */
-        .pose-grid {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
             gap: 16px;
-        }
-
-        .pose-section {
-            background: rgba(0, 212, 255, 0.05);
-            border: 1px solid rgba(0, 212, 255, 0.1);
-            border-radius: 12px;
-            padding: 16px;
-        }
-
-        .pose-section-title {
-            font-size: 11px;
-            text-transform: uppercase;
-            letter-spacing: 1.5px;
-            color: var(--accent);
-            margin-bottom: 12px;
-        }
-
-        .pose-item {
-            display: flex;
-            justify-content: space-between;
-            align-items: baseline;
-            padding: 8px 0;
-            border-bottom: 1px solid rgba(255,255,255,0.05);
-        }
-
-        .pose-item:last-child {
-            border-bottom: none;
-        }
-
-        .pose-label {
-            font-size: 13px;
-            color: var(--text-dim);
-        }
-
-        .pose-value {
-            font-family: 'SF Mono', 'Fira Code', monospace;
-            font-size: 20px;
-            font-weight: 600;
-            color: var(--text);
-            min-width: 80px;
-            text-align: right;
-        }
-
-        .pose-unit {
-            font-size: 12px;
-            color: var(--text-dim);
-            margin-left: 4px;
-        }
-
-        /* Motors Grid */
-        .motors-grid {
-            display: grid;
-            grid-template-columns: repeat(3, 1fr);
-            gap: 12px;
-        }
-
-        .motor-card {
-            background: var(--bg-dark);
-            border: 1px solid var(--border);
-            border-radius: 12px;
-            padding: 16px;
-            text-align: center;
-            transition: all 0.2s;
-        }
-
-        .motor-card:hover {
-            border-color: var(--accent);
-            transform: translateY(-2px);
-        }
-
-        .motor-id {
-            font-size: 11px;
-            text-transform: uppercase;
-            letter-spacing: 1px;
-            color: var(--accent);
-            margin-bottom: 8px;
-        }
-
-        .motor-value {
-            font-family: 'SF Mono', 'Fira Code', monospace;
-            font-size: 24px;
-            font-weight: 600;
-        }
-
-        .motor-unit {
-            font-size: 14px;
-            color: var(--text-dim);
-        }
-
-        /* Controls */
-        .controls-grid {
-            display: grid;
-            grid-template-columns: repeat(2, 1fr);
-            gap: 12px;
-        }
-
-        .btn {
-            padding: 14px 20px;
-            border: none;
-            border-radius: 10px;
-            font-size: 14px;
-            font-weight: 600;
-            cursor: pointer;
-            transition: all 0.2s;
-            display: flex;
-            align-items: center;
+            flex-wrap: wrap;
             justify-content: center;
-            gap: 8px;
         }
 
-        .btn-primary {
-            background: linear-gradient(135deg, var(--accent) 0%, #0088cc 100%);
-            color: #000;
-        }
-
-        .btn-primary:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 8px 20px rgba(0, 212, 255, 0.3);
-        }
-
-        .btn-secondary {
-            background: var(--bg-dark);
-            color: var(--text);
-            border: 1px solid var(--border);
-        }
-
-        .btn-secondary:hover {
-            border-color: var(--accent);
-            background: rgba(0, 212, 255, 0.1);
-        }
-
-        .btn-danger {
-            background: rgba(255, 68, 102, 0.1);
-            color: var(--error);
-            border: 1px solid var(--error);
-        }
-
-        .btn-danger:hover {
-            background: var(--error);
-            color: #fff;
-        }
-
-        .btn:disabled {
-            opacity: 0.4;
-            cursor: not-allowed;
-            transform: none !important;
-            box-shadow: none !important;
-        }
-
-        /* Stats Bar */
-        .stats-bar {
-            grid-column: 1 / -1;
-            display: flex;
-            gap: 24px;
-            padding: 16px 24px;
-            background: var(--bg-card);
-            border: 1px solid var(--border);
-            border-radius: 12px;
-        }
-
-        .stat {
+        .toggle-control {
             display: flex;
             align-items: center;
-            gap: 8px;
+            gap: 10px;
         }
 
-        .stat-label {
-            font-size: 12px;
-            color: var(--text-dim);
-            text-transform: uppercase;
-            letter-spacing: 1px;
-        }
-
-        .stat-value {
-            font-family: 'SF Mono', 'Fira Code', monospace;
+        .toggle-label {
             font-size: 14px;
-            font-weight: 600;
-            color: var(--accent);
-        }
-
-        /* Error Display */
-        .error-banner {
-            display: none;
-            grid-column: 1 / -1;
-            padding: 16px 20px;
-            background: rgba(255, 68, 102, 0.1);
-            border: 1px solid var(--error);
-            border-radius: 12px;
-            color: var(--error);
-            font-size: 14px;
-        }
-
-        .error-banner.visible {
-            display: block;
-        }
-
-        /* Visual Indicator */
-        .visual-container {
-            grid-column: 1 / -1;
-            height: 200px;
-            background: var(--bg-card);
-            border: 1px solid var(--border);
-            border-radius: 16px;
+            font-weight: 500;
+            color: var(--gray-600);
             display: flex;
             align-items: center;
-            justify-content: center;
-            position: relative;
-            overflow: hidden;
+            gap: 6px;
         }
 
-        .head-indicator {
-            width: 80px;
-            height: 80px;
-            background: linear-gradient(135deg, var(--accent) 0%, #0066ff 100%);
+        .toggle-status {
+            width: 6px;
+            height: 6px;
             border-radius: 50%;
-            position: relative;
-            transition: transform 0.05s ease-out;
-            box-shadow: 0 0 40px rgba(0, 212, 255, 0.3);
+            background: var(--gray-300);
+            transition: background 0.2s;
         }
 
-        .head-indicator::before {
+        .toggle-status.active { background: var(--green-500); }
+
+        .toggle-switch {
+            position: relative;
+            width: 44px;
+            height: 24px;
+        }
+
+        .toggle-switch input { opacity: 0; width: 0; height: 0; }
+
+        .toggle-slider {
+            position: absolute;
+            cursor: pointer;
+            inset: 0;
+            background: var(--gray-200);
+            border-radius: 12px;
+            transition: all 0.2s;
+        }
+
+        .toggle-slider::before {
             content: '';
             position: absolute;
-            top: 15px;
-            left: 50%;
-            transform: translateX(-50%);
-            width: 20px;
-            height: 8px;
-            background: rgba(0,0,0,0.3);
-            border-radius: 4px;
+            height: 18px;
+            width: 18px;
+            left: 3px;
+            bottom: 3px;
+            background: var(--white);
+            border-radius: 50%;
+            transition: all 0.2s;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
         }
 
-        .axis-label {
-            position: absolute;
-            font-size: 11px;
-            color: var(--text-dim);
-            text-transform: uppercase;
-            letter-spacing: 1px;
+        .toggle-switch input:checked + .toggle-slider { background: var(--gray-800); }
+        .toggle-switch input:checked + .toggle-slider::before { transform: translateX(20px); }
+        .toggle-switch input:disabled + .toggle-slider { opacity: 0.4; cursor: not-allowed; }
+
+        .toggle-control.highlight {
+            background: linear-gradient(135deg, #fef3c7 0%, #fde68a 100%);
+            padding: 6px 12px;
+            border-radius: 8px;
+            margin: -6px 0;
         }
 
-        .axis-label.x { right: 20px; top: 50%; transform: translateY(-50%); }
-        .axis-label.y { top: 20px; left: 50%; transform: translateX(-50%); }
-        .axis-label.z { bottom: 20px; left: 50%; transform: translateX(-50%); }
-
-        /* Footer */
-        .footer {
-            text-align: center;
-            padding: 20px;
-            color: var(--text-dim);
-            font-size: 12px;
+        .toggle-control.highlight .toggle-label {
+            color: var(--gray-700);
+            font-weight: 600;
         }
 
-        .footer a {
-            color: var(--accent);
-            text-decoration: none;
+        .toggle-divider {
+            width: 1px;
+            height: 24px;
+            background: var(--gray-200);
         }
+
+        @media (max-width: 768px) {
+            .header { padding: 12px; }
+            .header-controls { gap: 12px; }
+            .toggle-label { font-size: 13px; }
+            .toggle-switch { width: 40px; height: 22px; }
+            .toggle-slider::before { height: 16px; width: 16px; }
+            .toggle-switch input:checked + .toggle-slider::before { transform: translateX(18px); }
+            .toggle-divider { display: none; }
+        }
+
+        /* Main */
+        .main {
+            max-width: 720px;
+            margin: 0 auto;
+            padding: 32px 24px 120px 24px;
+        }
+
+        /* Messages */
+        .messages-container {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+            margin-bottom: 24px;
+        }
+
+        .message {
+            display: flex;
+            gap: 12px;
+            animation: messageIn 0.3s ease-out;
+            scroll-margin-top: 80px;
+        }
+
+        @keyframes messageIn {
+            from { opacity: 0; transform: translateY(8px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        .message-avatar {
+            width: 32px;
+            height: 32px;
+            border-radius: 8px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            flex-shrink: 0;
+            font-size: 14px;
+            background: var(--gray-100);
+        }
+
+        .message-avatar.error { background: #fef2f2; }
+        .message-avatar.success, .message-avatar.pose { background: #f0fdf4; }
+        .message-avatar.info { background: #eff6ff; }
+
+        .message-content {
+            flex: 1;
+            padding: 12px 16px;
+            background: var(--gray-50);
+            border: 1px solid var(--gray-100);
+            border-radius: 12px;
+            border-top-left-radius: 4px;
+        }
+
+        .message.error .message-content { background: #fef2f2; border-color: #fecaca; }
+        .message.success .message-content, .message.pose .message-content { background: #f0fdf4; border-color: #bbf7d0; }
+        .message.info .message-content { background: #eff6ff; border-color: #bfdbfe; }
+
+        .message-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 4px;
+        }
+
+        .message-title {
+            font-size: 13px;
+            font-weight: 600;
+            color: var(--gray-700);
+        }
+
+        .message.error .message-title { color: var(--red-500); }
+        .message.success .message-title, .message.pose .message-title { color: var(--green-500); }
+        .message.info .message-title { color: var(--blue-500); }
+
+        .message-time { font-size: 11px; color: var(--gray-400); }
+        .message-text { font-size: 14px; color: var(--gray-600); line-height: 1.5; }
+
+        .message-dismiss {
+            background: none;
+            border: none;
+            color: var(--gray-400);
+            cursor: pointer;
+            padding: 2px;
+            margin-left: 8px;
+            opacity: 0;
+            transition: opacity 0.2s;
+        }
+
+        .message:hover .message-dismiss { opacity: 1; }
+        .message-dismiss:hover { color: var(--gray-600); }
+
+        /* Action Bar */
+        .action-bar { margin-top: 24px; margin-bottom: 100px; }
+
+        .action-buttons {
+            display: flex;
+            gap: 12px;
+            justify-content: center;
+            flex-wrap: wrap;
+        }
+
+        .action-buttons.hidden { display: none; }
+
+        .action-btn {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+            padding: 12px 20px;
+            background: var(--gray-50);
+            border: 1px solid var(--gray-200);
+            border-radius: 10px;
+            font-family: inherit;
+            font-size: 14px;
+            font-weight: 500;
+            color: var(--gray-700);
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .action-btn:hover:not(:disabled) { background: var(--gray-100); border-color: var(--gray-300); }
+        .action-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+        .action-btn-stop {
+            background: #fef2f2;
+            border-color: #fecaca;
+            color: var(--red-500);
+            min-width: 120px;
+        }
+
+        .action-btn-stop:hover { background: #fee2e2; border-color: #fca5a5; }
     </style>
 </head>
 <body>
     <header class="header">
-        <div class="logo">
-            <div class="logo-icon">🤖</div>
-            <div class="logo-text">Reachy <span>Mini</span></div>
-        </div>
-        <div class="status-badge">
-            <div class="status-dot" id="status-dot"></div>
-            <span id="status-text">Disconnected</span>
+        <div class="header-controls">
+            <div class="toggle-control highlight" id="connect-control">
+                <span class="toggle-label">
+                    <span class="toggle-status" id="connect-status"></span>
+                    Connect
+                </span>
+                <label class="toggle-switch">
+                    <input type="checkbox" id="toggle-connect">
+                    <span class="toggle-slider"></span>
+                </label>
+            </div>
+
+            <div class="toggle-divider"></div>
+
+            <div class="toggle-control">
+                <span class="toggle-label">
+                    <span class="toggle-status" id="torque-status"></span>
+                    Torque
+                </span>
+                <label class="toggle-switch">
+                    <input type="checkbox" id="toggle-torque" disabled>
+                    <span class="toggle-slider"></span>
+                </label>
+            </div>
+
+            <div class="toggle-divider"></div>
+
+            <div class="toggle-control">
+                <span class="toggle-label">
+                    <span class="toggle-status" id="mic-status"></span>
+                    Mic
+                </span>
+                <label class="toggle-switch">
+                    <input type="checkbox" id="toggle-mic" disabled>
+                    <span class="toggle-slider"></span>
+                </label>
+            </div>
+
+            <div class="toggle-divider"></div>
+
+            <div class="toggle-control">
+                <span class="toggle-label">
+                    <span class="toggle-status" id="video-status"></span>
+                    Video
+                </span>
+                <label class="toggle-switch">
+                    <input type="checkbox" id="toggle-video" disabled>
+                    <span class="toggle-slider"></span>
+                </label>
+            </div>
         </div>
     </header>
 
     <main class="main">
-        <!-- Error Banner -->
-        <div class="error-banner" id="error-banner"></div>
+        <div class="messages-container" id="messages-container"></div>
 
-        <!-- Head Pose Card -->
-        <div class="card">
-            <div class="card-header">
-                <span class="card-title">Head Pose</span>
+        <div class="action-bar">
+            <div class="action-buttons" id="action-buttons">
+                <button class="action-btn" id="btn-read-position" disabled>Read Position</button>
+                <button class="action-btn" id="btn-record" disabled>Record</button>
+                <button class="action-btn" id="btn-replay" disabled>Replay</button>
             </div>
-            <div class="card-body">
-                <div class="pose-grid">
-                    <div class="pose-section">
-                        <div class="pose-section-title">Position</div>
-                        <div class="pose-item">
-                            <span class="pose-label">X</span>
-                            <span><span class="pose-value" id="pose-x">--</span><span class="pose-unit">mm</span></span>
-                        </div>
-                        <div class="pose-item">
-                            <span class="pose-label">Y</span>
-                            <span><span class="pose-value" id="pose-y">--</span><span class="pose-unit">mm</span></span>
-                        </div>
-                        <div class="pose-item">
-                            <span class="pose-label">Z</span>
-                            <span><span class="pose-value" id="pose-z">--</span><span class="pose-unit">mm</span></span>
-                        </div>
-                    </div>
-                    <div class="pose-section">
-                        <div class="pose-section-title">Rotation</div>
-                        <div class="pose-item">
-                            <span class="pose-label">Roll</span>
-                            <span><span class="pose-value" id="pose-roll">--</span><span class="pose-unit">°</span></span>
-                        </div>
-                        <div class="pose-item">
-                            <span class="pose-label">Pitch</span>
-                            <span><span class="pose-value" id="pose-pitch">--</span><span class="pose-unit">°</span></span>
-                        </div>
-                        <div class="pose-item">
-                            <span class="pose-label">Yaw</span>
-                            <span><span class="pose-value" id="pose-yaw">--</span><span class="pose-unit">°</span></span>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </div>
-
-        <!-- Motors Card -->
-        <div class="card">
-            <div class="card-header">
-                <span class="card-title">Motor Angles</span>
-            </div>
-            <div class="card-body">
-                <div class="motors-grid">
-                    <div class="motor-card">
-                        <div class="motor-id">Motor 1</div>
-                        <span class="motor-value" id="motor-1">--</span><span class="motor-unit">°</span>
-                    </div>
-                    <div class="motor-card">
-                        <div class="motor-id">Motor 2</div>
-                        <span class="motor-value" id="motor-2">--</span><span class="motor-unit">°</span>
-                    </div>
-                    <div class="motor-card">
-                        <div class="motor-id">Motor 3</div>
-                        <span class="motor-value" id="motor-3">--</span><span class="motor-unit">°</span>
-                    </div>
-                    <div class="motor-card">
-                        <div class="motor-id">Motor 4</div>
-                        <span class="motor-value" id="motor-4">--</span><span class="motor-unit">°</span>
-                    </div>
-                    <div class="motor-card">
-                        <div class="motor-id">Motor 5</div>
-                        <span class="motor-value" id="motor-5">--</span><span class="motor-unit">°</span>
-                    </div>
-                    <div class="motor-card">
-                        <div class="motor-id">Motor 6</div>
-                        <span class="motor-value" id="motor-6">--</span><span class="motor-unit">°</span>
-                    </div>
-                    <div class="motor-card">
-                        <div class="motor-id">Motor 21</div>
-                        <span class="motor-value" id="motor-21">--</span><span class="motor-unit">°</span>
-                    </div>
-                    <div class="motor-card">
-                        <div class="motor-id">Motor 22</div>
-                        <span class="motor-value" id="motor-22">--</span><span class="motor-unit">°</span>
-                    </div>
-                </div>
-            </div>
-        </div>
-
-        <!-- Controls Card -->
-        <div class="card" style="grid-column: 1 / -1;">
-            <div class="card-header">
-                <span class="card-title">Controls</span>
-            </div>
-            <div class="card-body">
-                <div class="controls-grid">
-                    <button class="btn btn-primary" id="btn-connect" >
-                        Connect
-                    </button>
-                    <button class="btn btn-secondary" id="btn-fk" disabled>
-                        Full Position 
-                    </button>
-                    <button class="btn btn-secondary" id="btn-torque-on" disabled>
-                        Torque on
-                    </button>
-                    <button class="btn btn-secondary" id="btn-torque-off" disabled>
-                        Torque off
-                    </button>
-                    <button class="btn btn-secondary" id="btn-record" disabled>
-                        Record
-                    </button>
-                    <button class="btn btn-secondary" id="btn-replay" disabled>
-                        Replay
-                    </button>
-                </div>
-            </div>
-        </div>
-
-        <!-- Stats Bar -->
-        <div class="stats-bar">
-            <div class="stat">
-                <span class="stat-label">Protocol</span>
-                <span class="stat-value">Dynamixel 2.0</span>
+            <div class="action-buttons hidden" id="stop-button-container">
+                <button class="action-btn action-btn-stop" id="btn-stop">Stop</button>
             </div>
         </div>
     </main>
 
-    <footer class="footer">
-        Reachy Mini Stewart Platform · Rust + WASM ·
-    </footer>
+    <script>
+        // Elements
+        const $ = id => document.getElementById(id);
+        const toggleConnect = $('toggle-connect');
+        const toggleTorque = $('toggle-torque');
+        const toggleMic = $('toggle-mic');
+        const toggleVideo = $('toggle-video');
+        const connectControl = $('connect-control');
+        const connectStatus = $('connect-status');
+        const torqueStatus = $('torque-status');
+        const micStatus = $('mic-status');
+        const videoStatus = $('video-status');
+        const messagesContainer = $('messages-container');
+        const actionButtons = $('action-buttons');
+        const stopButtonContainer = $('stop-button-container');
+        const btnReadPosition = $('btn-read-position');
+        const btnRecord = $('btn-record');
+        const btnReplay = $('btn-replay');
+        const btnStop = $('btn-stop');
 
-        <script src="index.js"></script>
+        // State
+        let isConnected = false;
+        let currentMode = null;
+        let poseMessageId = null;
 
+        // Messages
+        function addMessage(type, title, text, id = null) {
+            const msgId = id || ('msg-' + Date.now());
+            const time = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+            const icons = { error: '⚠️', success: '✓', info: 'ℹ️', system: '🤖', pose: '📍' };
+
+            const message = document.createElement('div');
+            message.className = `message ${type}`;
+            message.id = msgId;
+            message.innerHTML = `
+                <div class="message-avatar ${type}">${icons[type] || '•'}</div>
+                <div class="message-content">
+                    <div class="message-header">
+                        <span class="message-title">${title}</span>
+                        <div style="display:flex;align-items:center;">
+                            <span class="message-time">${time}</span>
+                            <button class="message-dismiss" onclick="dismissMessage('${msgId}')">✕</button>
+                        </div>
+                    </div>
+                    <div class="message-text">${text}</div>
+                </div>
+            `;
+
+            messagesContainer.appendChild(message);
+            setTimeout(() => message.scrollIntoView({ behavior: 'smooth', block: 'start' }), 50);
+            return msgId;
+        }
+
+        function updateMessage(id, text) {
+            const msg = $(id);
+            if (msg) msg.querySelector('.message-text').innerHTML = text;
+        }
+
+        function dismissMessage(id) {
+            const msg = $(id);
+            if (msg) {
+                msg.style.opacity = '0';
+                msg.style.transform = 'translateY(-8px)';
+                msg.style.transition = 'all 0.2s';
+                setTimeout(() => msg.remove(), 200);
+            }
+        }
+
+        // Pose
+        function updatePose(x, y, z, roll, pitch, yaw) {
+            if (poseMessageId) {
+                updateMessage(poseMessageId, 
+                    `<strong>Position:</strong> X: ${x.toFixed(1)}mm, Y: ${y.toFixed(1)}mm, Z: ${z.toFixed(1)}mm<br>
+                     <strong>Rotation:</strong> Roll: ${roll.toFixed(1)}°, Pitch: ${pitch.toFixed(1)}°, Yaw: ${yaw.toFixed(1)}°`);
+            }
+        }
+
+        // Mode
+        function setMode(mode) {
+            currentMode = mode;
+            actionButtons.classList.toggle('hidden', !!mode);
+            stopButtonContainer.classList.toggle('hidden', !mode);
+        }
+
+        // Action handlers
+        btnReadPosition.onclick = async () => {
+            setMode('reading');
+            poseMessageId = addMessage('pose', 'Head Pose', '<strong>Position:</strong> --<br><strong>Rotation:</strong> --');
+            addMessage('info', 'Reading Position', 'Continuously reading head position...');
+            await read_pose();
+        };
+
+        btnRecord.onclick = async () => {
+            setMode('recording');
+            addMessage('info', 'Recording', 'Recording movement... Press Stop when done.');
+            await record();
+        };
+
+        btnReplay.onclick = async () => {
+            setMode('replaying');
+            addMessage('info', 'Replaying', 'Replaying recorded movement...');
+            await replay();
+        };
+
+        btnStop.onclick = async () => {
+            const wasMode = currentMode;
+            setMode(null);
+            if (wasMode === 'reading') { await stop(); addMessage('info', 'Stopped', 'Position reading stopped.'); }
+            else if (wasMode === 'recording') { await stop(); addMessage('success', 'Recording Saved', 'Movement recording saved.'); }
+            else if (wasMode === 'replaying') { await stop(); addMessage('info', 'Stopped', 'Replay stopped.'); }
+            poseMessageId = null;
+        };
+
+        // Toggle handlers
+        toggleConnect.onchange = async (e) => {
+            if (e.target.checked) {
+                try {
+                    await connect();
+                    isConnected = true;
+                    connectStatus.classList.add('active');
+                    connectControl.classList.remove('highlight');
+                    [toggleTorque, toggleMic, toggleVideo, btnReadPosition, btnRecord, btnReplay].forEach(el => el.disabled = false);
+                    addMessage('success', 'Connected', 'Successfully connected to Reachy Mini.');
+                } catch (err) {
+                    e.target.checked = false;
+                    addMessage('error', 'Connection Failed', err.message || 'Unable to connect.');
+                }
+            } else {
+                if (currentMode) btnStop.click();
+                await disconnect();
+                isConnected = false;
+                connectStatus.classList.remove('active');
+                connectControl.classList.add('highlight');
+                [toggleTorque, toggleMic, toggleVideo].forEach(el => { el.checked = false; el.disabled = true; });
+                [torqueStatus, micStatus, videoStatus].forEach(el => el.classList.remove('active'));
+                [btnReadPosition, btnRecord, btnReplay].forEach(el => el.disabled = true);
+                addMessage('info', 'Disconnected', 'Disconnected from Reachy Mini.');
+            }
+        };
+
+        toggleTorque.onchange = async (e) => {
+            if (!isConnected) { e.target.checked = false; return; }
+            if (e.target.checked) {
+                try { await enableTorque(); torqueStatus.classList.add('active'); addMessage('success', 'Torque Enabled', 'Motor torque is now active.'); }
+                catch (err) { e.target.checked = false; addMessage('error', 'Torque Error', err.message || 'Failed to enable torque.'); }
+            } else {
+                await disableTorque();
+                torqueStatus.classList.remove('active');
+                addMessage('info', 'Torque Disabled', 'Motor torque has been disabled.');
+            }
+        };
+
+        toggleMic.onchange = (e) => {
+            if (!isConnected) { e.target.checked = false; return; }
+            micStatus.classList.toggle('active', e.target.checked);
+            addMessage(e.target.checked ? 'success' : 'info', 
+                e.target.checked ? 'Microphone Active' : 'Microphone Stopped',
+                e.target.checked ? 'Audio input is now streaming.' : 'Audio input has been stopped.');
+        };
+
+        toggleVideo.onchange = (e) => {
+            if (!isConnected) { e.target.checked = false; return; }
+            videoStatus.classList.toggle('active', e.target.checked);
+            addMessage(e.target.checked ? 'success' : 'info',
+                e.target.checked ? 'Video Stream Active' : 'Video Stream Stopped',
+                e.target.checked ? 'Video is now streaming.' : 'Video stream has been stopped.');
+        };
+
+        // Implement these functions
+        async function disconnect() {}
+
+        // Welcome
+        addMessage('system', 'Welcome', 'Toggle "Connect" to start.');
+    </script>
+    <script src="index.js"></script>
 </body>
 </html>
