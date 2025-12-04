@@ -1929,10 +1929,11 @@
         var block = workspace.newBlock('controls_for');
         block.initSvg();
 
-        // Get variable name
+        // Get variable name and create it in workspace
         if (node.init && node.init.declarations) {
           var varName = node.init.declarations[0].id.name;
-          block.setFieldValue(varName, 'VAR');
+          var variable = workspace.createVariable(varName);
+          block.setFieldValue(variable.getId(), 'VAR');
 
           // FROM value
           var fromVal = node.init.declarations[0].init;
@@ -2210,11 +2211,24 @@
             return block;
           }
 
-          // Other single-argument math functions use math_single block
-          var mathOpMap = {
+          // Rounding functions use math_round block
+          var roundOpMap = {
             'floor': 'ROUNDDOWN',
             'ceil': 'ROUNDUP',
-            'round': 'ROUND',
+            'round': 'ROUND'
+          };
+          if (roundOpMap[mathFunc] && node.arguments.length >= 1) {
+            var block = workspace.newBlock('math_round');
+            block.setFieldValue(roundOpMap[mathFunc], 'OP');
+            block.initSvg();
+            var argBlock = processExpression(node.arguments[0], false);
+            if (argBlock) connectValue(block, 'NUM', argBlock);
+            block.render();
+            return block;
+          }
+
+          // Other single-argument math functions use math_single block
+          var mathOpMap = {
             'abs': 'ABS',
             'sqrt': 'ROOT'
           };
@@ -2228,6 +2242,18 @@
             return block;
           }
         }
+
+        // Handle Date.now() -> get_time block
+        if (node.callee.type === 'MemberExpression' &&
+            node.callee.object.name === 'Date' &&
+            node.callee.property.name === 'now' &&
+            node.arguments.length === 0) {
+          var block = workspace.newBlock('get_time');
+          block.initSvg();
+          block.render();
+          return block;
+        }
+
         return processCall(node, asStatement);
       }
 
@@ -3040,7 +3066,11 @@
           '- Robot.getTemperature(motor) - get motor temperature\n\n' +
           'TIMING:\n' +
           '- wait(seconds) - wait N seconds (use this for delays!)\n' +
-          '- sleep(ms) - wait N milliseconds\n\n' +
+          '- sleep(ms) - wait N milliseconds\n' +
+          '- Date.now() - get current time in milliseconds since epoch\n' +
+          '  To get current seconds: Math.floor((Date.now() / 1000) % 60)\n' +
+          '  To get current minutes: Math.floor((Date.now() / 60000) % 60)\n' +
+          '  To get current hours: Math.floor((Date.now() / 3600000) % 24)\n\n' +
           'OUTPUT:\n' +
           '- logConsole(message) - log message to console\n' +
           '- logJoint(motor) - log joint position\n' +
@@ -3052,10 +3082,17 @@
           '- if/else statements: if (x > 10) { ... } else { ... }\n' +
           '- Math operators: +, -, *, /, %\n' +
           '- Math functions: Math.floor(), Math.ceil(), Math.round(), Math.abs(), Math.sqrt()\n' +
-          '- Trigonometry (angles in DEGREES, must convert to radians for JavaScript):\n' +
-          '  Math.cos(angle * Math.PI / 180), Math.sin(angle * Math.PI / 180), Math.tan(angle * Math.PI / 180)\n' +
-          '  Example: Math.cos(90 * Math.PI / 180) for 90 degrees\n' +
-          '  Inverse functions return degrees: Math.asin(x) * 180 / Math.PI, Math.acos(x) * 180 / Math.PI\n' +
+          '- Trigonometry - ALL ANGLES ARE IN DEGREES! Keep all angle variables in degrees.\n' +
+          '  To use cos/sin/tan, inline the degree-to-radian conversion DIRECTLY in the function call:\n' +
+          '    Math.cos(angleDegrees * Math.PI / 180)\n' +
+          '    Math.sin(angleDegrees * Math.PI / 180)\n' +
+          '    Math.tan(angleDegrees * Math.PI / 180)\n' +
+          '  Example: var angle = 90; var x = 10 * Math.cos(angle * Math.PI / 180);\n' +
+          '  NEVER create a separate radian variable! Keep everything in degrees!\n' +
+          '  WRONG: var angleRad = angle * Math.PI / 180; var x = Math.cos(angleRad);\n' +
+          '  CORRECT: var x = Math.cos(angle * Math.PI / 180);\n' +
+          '  Inverse functions return radians, convert to degrees inline:\n' +
+          '    Math.asin(x) * 180 / Math.PI, Math.acos(x) * 180 / Math.PI, Math.atan(x) * 180 / Math.PI\n' +
           '- Math constants: Math.PI (represents 180 degrees, use Math.PI / 180 to convert degrees to radians)\n' +
           '- Comparisons: <, >, <=, >=, ==, !=\n' +
           '- Logic: &&, ||, !\n' +
@@ -3065,6 +3102,7 @@
           '- function declarations (NEVER write "function myFunc() {}" - inline the code instead!)\n' +
           '- setTimeout, setInterval (use for/while loops with wait() instead)\n' +
           '- arrow functions (no () => {})\n' +
+          '- new Date(), date.getSeconds() etc. (use Date.now() with math instead - see TIMING section)\n' +
           '- template literals (no `${var}`)\n' +
           '- console.log (use logConsole instead)\n' +
           '- JSON.stringify\n' +
