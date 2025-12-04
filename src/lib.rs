@@ -351,12 +351,13 @@ pub async fn fk(duration: Option<f64>) -> Result<(), JsValue> {
                         frames.push(results.clone());
                     })
                 }
-                let t = kinematics.forward_kinematics(results.clone(), None);
+                let t = kinematics.forward_kinematics(&results, None);
 
-                // remove head_z_offset
+                // Convert to user coordinates (Z=0 is minimum height)
+                const HEAD_Z_OFFSET_MM: f32 = 177.0;
                 let x = -t[(0, 3)] * 1000.; // Reverse X axis because don't know
                 let y = t[(1, 3)] * 1000.;
-                let z = t[(2, 3)] * 1000.; //- HEAD_Z_OFFSET * 1000.;
+                let z = t[(2, 3)] * 1000. - HEAD_Z_OFFSET_MM;
                                            // pose_x.set_text_content(Some(&format!("{:.2}", x)));
                                            // pose_y.set_text_content(Some(&format!("{:.2}", y)));
                                            // pose_z.set_text_content(Some(&format!("{:.2}", z)));
@@ -437,12 +438,26 @@ pub fn forward_kinematics(angles_deg: Vec<f32>) -> Result<Vec<f32>, JsValue> {
         );
     }
     let angles_rad: Vec<f32> = angles_deg.iter().map(|&deg| deg.to_radians()).collect();
-    let t = kinematics.forward_kinematics(angles_rad, None);
 
-    // remove head_z_offset
+    // Initialize FK with default position (HEAD_Z_OFFSET)
+    const HEAD_Z_OFFSET: f32 = 0.177;
+    let t_init = nalgebra::Matrix4::new_translation(&nalgebra::Vector3::new(0.0, 0.0, HEAD_Z_OFFSET));
+    kinematics.reset_forward_kinematics(t_init);
+
+    // Iterate to converge
+    for _ in 0..100 {
+        kinematics.forward_kinematics(&angles_rad, None);
+    }
+    let t = kinematics.forward_kinematics(&angles_rad, None);
+
+    // Convert from internal coordinates to user coordinates
+    // Internal: Z=HEAD_Z_OFFSET (177mm) is minimum
+    // User: Z=0 is minimum
+    const HEAD_Z_OFFSET_MM: f32 = 177.0;
+
     let x = -t[(0, 3)] * 1000.; // Reverse X axis because don't know
     let y = t[(1, 3)] * 1000.;
-    let z = t[(2, 3)] * 1000.;
+    let z = t[(2, 3)] * 1000. - HEAD_Z_OFFSET_MM;  // Subtract offset to convert to user coordinates
 
     let r = t.fixed_view::<3, 3>(0, 0);
     // Euler XYZ: Roll (X), Pitch (Y), Yaw (Z)
@@ -503,19 +518,38 @@ pub fn inverse_kinematics(xyzrpy: Vec<f32>) -> Result<Vec<f32>, JsValue> {
             solution,
         );
     }
-    let t = nalgebra::Matrix4::new_translation(&nalgebra::Vector3::new(
-        xyzrpy[0] / -1000.0,
-        xyzrpy[1] / 1000.0,
-        xyzrpy[2] / 1000.0,
-    ));
     let roll_rad = xyzrpy[3].to_radians();
     let pitch_rad = xyzrpy[4].to_radians();
     let yaw_rad = xyzrpy[5].to_radians();
-    let t =
-        nalgebra::Matrix4::new_rotation(nalgebra::Vector3::new(roll_rad, pitch_rad, yaw_rad)) * t;
+
+    // Create rotation matrix from Euler angles (XYZ convention: Roll, Pitch, Yaw)
+    let rotation = nalgebra::Rotation3::from_euler_angles(roll_rad, pitch_rad, yaw_rad);
+    let t_rotation = rotation.to_homogeneous();
+
+    // Add HEAD_Z_OFFSET to user's Z coordinate to get absolute Z
+    // User coordinate system: Z=0 is minimum height
+    // Internal coordinate system: Z=HEAD_Z_OFFSET (0.177m = 177mm) is minimum height
+    const HEAD_Z_OFFSET: f32 = 0.177;
+
+    // Create translation vector
+    let translation = nalgebra::Vector3::new(
+        xyzrpy[0] / -1000.0,
+        xyzrpy[1] / 1000.0,
+        (xyzrpy[2] + HEAD_Z_OFFSET * 1000.0) / 1000.0,  // Add offset before converting to meters
+    );
+
+    // Apply rotation first, then translation
+    // T = [R | t] where t is the translation in world coordinates
+    let mut t = t_rotation;
+    t[(0, 3)] = translation.x;
+    t[(1, 3)] = translation.y;
+    t[(2, 3)] = translation.z;
     let joints = kinematics.inverse_kinematics(t, None);
 
-    Ok(joints)
+    // Convert from radians to degrees
+    let joints_deg: Vec<f32> = joints.iter().map(|&rad| rad.to_degrees()).collect();
+
+    Ok(joints_deg)
 }
 
 #[wasm_bindgen]
@@ -604,4 +638,112 @@ static MOTOR_JSON: &str = include_str!("motors.json");
 /// XL330: 0-4095 maps to 0-360 degrees, center (2048) = 0 radians
 fn raw_to_radians(raw: i32) -> f32 {
     ((raw - 2048) as f32 / 4096.0) * 2.0 * std::f32::consts::PI
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_ik_with_zero_coordinates() {
+        // Test [0, 0, 0, 0, 0, 0] - Z=0 is now the minimum height (valid!)
+        let coords = vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+        let result = inverse_kinematics(coords);
+
+        assert!(result.is_ok(), "IK should succeed for [0, 0, 0, 0, 0, 0]");
+        let joints = result.unwrap();
+        assert_eq!(joints.len(), 6, "Should return 6 joint angles");
+        assert!(!joints.iter().any(|&j| j.is_nan()), "Joints should not contain NaN");
+
+        // Print results for debugging
+        println!("IK [0, 0, 0, 0, 0, 0] -> joints: {:?}", joints);
+    }
+
+    #[test]
+    fn test_fk_ik_roundtrip_default_position() {
+        // Test the default position: Z=0 is minimum height
+        let original_coords = vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+
+        let joints = inverse_kinematics(original_coords.clone()).unwrap();
+        println!("Joints from IK (default position): {:?}", joints);
+
+        let reconstructed_coords = forward_kinematics(joints).unwrap();
+        println!("Reconstructed coords from FK (default position): {:?}", reconstructed_coords);
+
+        // Check if we get back similar coordinates (with tolerance)
+        for i in 0..6 {
+            let diff = (original_coords[i] - reconstructed_coords[i]).abs();
+            assert!(diff < 10.0, "Coordinate {} mismatch: expected {}, got {} (diff: {})",
+                    i, original_coords[i], reconstructed_coords[i], diff);
+        }
+    }
+
+    #[test]
+    fn test_fk_ik_roundtrip_with_translation() {
+        // Test with some translation (x=10mm, y=20mm, z=10mm above minimum)
+        let original_coords = vec![10.0, 20.0, 10.0, 0.0, 0.0, 0.0];
+
+        let joints = inverse_kinematics(original_coords.clone()).unwrap();
+        println!("Joints from IK: {:?}", joints);
+
+        let reconstructed_coords = forward_kinematics(joints).unwrap();
+        println!("Reconstructed coords from FK: {:?}", reconstructed_coords);
+
+        // Check if we get back similar coordinates (with tolerance)
+        for i in 0..3 {
+            let diff = (original_coords[i] - reconstructed_coords[i]).abs();
+            assert!(diff < 10.0, "Position {} mismatch: expected {}, got {} (diff: {})",
+                    i, original_coords[i], reconstructed_coords[i], diff);
+        }
+    }
+
+    #[test]
+    fn test_fk_ik_roundtrip_with_rotation() {
+        // Test with some rotation (roll=10°, pitch=15°, yaw=5°) at minimum Z
+        let original_coords = vec![0.0, 0.0, 0.0, 10.0, 15.0, 5.0];
+
+        let joints = inverse_kinematics(original_coords.clone()).unwrap();
+        println!("Joints from IK (rotation test): {:?}", joints);
+
+        let reconstructed_coords = forward_kinematics(joints).unwrap();
+        println!("Reconstructed coords from FK (rotation test): {:?}", reconstructed_coords);
+
+        // Check if we get back similar coordinates (with tolerance)
+        for i in 0..6 {
+            let diff = (original_coords[i] - reconstructed_coords[i]).abs();
+            assert!(diff < 10.0, "Coordinate {} mismatch: expected {}, got {} (diff: {})",
+                    i, original_coords[i], reconstructed_coords[i], diff);
+        }
+    }
+
+    #[test]
+    fn test_fk_ik_roundtrip_combined() {
+        // Test with both translation and rotation (z=10mm above minimum)
+        let original_coords = vec![5.0, -10.0, 10.0, 5.0, -10.0, 8.0];
+
+        let joints = inverse_kinematics(original_coords.clone()).unwrap();
+        println!("Joints from IK (combined test): {:?}", joints);
+
+        let reconstructed_coords = forward_kinematics(joints).unwrap();
+        println!("Reconstructed coords from FK (combined test): {:?}", reconstructed_coords);
+
+        // Check if we get back similar coordinates (with tolerance)
+        for i in 0..6 {
+            let diff = (original_coords[i] - reconstructed_coords[i]).abs();
+            assert!(diff < 10.0, "Coordinate {} mismatch: expected {}, got {} (diff: {})",
+                    i, original_coords[i], reconstructed_coords[i], diff);
+        }
+    }
+
+    #[test]
+    fn test_ik_below_minimum_height() {
+        // Test Z < 0 - this should be invalid (below minimum height)
+        let coords = vec![0.0, 0.0, -10.0, 0.0, 0.0, 0.0];
+        let result = inverse_kinematics(coords);
+
+        // Should return joints, but they should be invalid (NaN or out of range)
+        // The kinematics solver may not explicitly fail, but the result will be unreachable
+        assert!(result.is_ok(), "IK should return result even for invalid positions");
+    }
+
 }

@@ -457,39 +457,28 @@
       <block type="reboot_all"></block>
     </category>
 
-    <!-- Single Joint -->
-    <category name="🦾 Single Joint" colour="160">
-      <block type="set_joint">
-        <value name="JOINT"><shadow type="math_number"><field name="NUM">2048</field></shadow></value>
-      </block>
+    <!-- Ears (Motors 17-18) -->
+    <category name="👂 Ears" colour="160">
       <block type="set_degrees">
         <value name="DEGREES"><shadow type="math_number"><field name="NUM">0</field></shadow></value>
       </block>
-      <block type="get_joint"></block>
       <block type="get_degrees"></block>
       <block type="move_by">
-        <value name="AMOUNT"><shadow type="math_number"><field name="NUM">100</field></shadow></value>
-      </block>
-      <block type="move_smooth">
-        <value name="JOINT"><shadow type="math_number"><field name="NUM">2048</field></shadow></value>
-        <value name="DURATION"><shadow type="math_number"><field name="NUM">1</field></shadow></value>
+        <value name="AMOUNT"><shadow type="math_number"><field name="NUM">10</field></shadow></value>
       </block>
       <block type="set_speed">
         <value name="SPEED"><shadow type="math_number"><field name="NUM">100</field></shadow></value>
       </block>
     </category>
 
-    <!-- All Joints -->
-    <category name="🔗 All Joints" colour="180">
-      <block type="get_all_joints"></block>
-      <block type="set_all_joints"></block>
-      <block type="copy_joint"></block>
+    <!-- Head (Motors 11-16) -->
+    <category name="🤖 Head" colour="180">
+      <block type="get_head_coordinates"></block>
+      <block type="set_head_coordinates"></block>
     </category>
 
-    <!-- Kinematics -->
-    <category name="🦿 Kinematics" colour="290">
-      <block type="joints_to_coordinates"></block>
-      <block type="coordinates_to_joints"></block>
+    <!-- Coordinates -->
+    <category name="📐 Coordinates" colour="290">
       <block type="create_coordinates">
         <value name="X"><shadow type="math_number"><field name="NUM">0</field></shadow></value>
         <value name="Y"><shadow type="math_number"><field name="NUM">0</field></shadow></value>
@@ -499,9 +488,6 @@
         <value name="YAW"><shadow type="math_number"><field name="NUM">0</field></shadow></value>
       </block>
       <block type="get_coordinate"></block>
-      <block type="get_current_coordinates"></block>
-      <block type="joints_to_degrees"></block>
-      <block type="degrees_to_joints"></block>
     </category>
 
     <!-- Sensing -->
@@ -513,8 +499,8 @@
       <block type="get_load"></block>
       <block type="get_temperature"></block>
       <block type="joint_in_range">
-        <value name="MIN"><shadow type="math_number"><field name="NUM">1800</field></shadow></value>
-        <value name="MAX"><shadow type="math_number"><field name="NUM">2200</field></shadow></value>
+        <value name="MIN"><shadow type="math_number"><field name="NUM">-45</field></shadow></value>
+        <value name="MAX"><shadow type="math_number"><field name="NUM">45</field></shadow></value>
       </block>
     </category>
 

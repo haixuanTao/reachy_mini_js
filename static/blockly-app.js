@@ -82,7 +82,7 @@
       writer: null,
       connected: false,
       readBuffer: [],
-      motorIds: [11, 12, 13, 14, 15, 16, 17, 18],
+      motorIds: [11, 12, 13, 14, 15, 16],  // Head motors only (ears are controlled separately)
 
       CRC_TABLE: [
         0x0000, 0x8005, 0x800F, 0x000A, 0x801B, 0x001E, 0x0014, 0x8011,
@@ -159,6 +159,19 @@
           for (var j = 0; j < motorData[i].data.length; j++) {
             packet.push(motorData[i].data[j]);
           }
+        }
+        var crc = this.calculateCRC(packet);
+        packet.push(crc & 0xFF, (crc >> 8) & 0xFF);
+        return new Uint8Array(packet);
+      },
+
+      buildSyncReadPacket: function(address, dataLength, motorIds) {
+        var n = motorIds.length;
+        var length = 1 + 2 + 2 + n + 2;
+        var packet = [0xFF, 0xFF, 0xFD, 0x00, 0xFE, length & 0xFF, (length >> 8) & 0xFF, 0x82,
+                      address & 0xFF, (address >> 8) & 0xFF, dataLength & 0xFF, (dataLength >> 8) & 0xFF];
+        for (var i = 0; i < motorIds.length; i++) {
+          packet.push(motorIds[i]);
         }
         var crc = this.calculateCRC(packet);
         packet.push(crc & 0xFF, (crc >> 8) & 0xFF);
@@ -284,6 +297,44 @@
         });
       },
 
+      waitForSyncReadPackets: function(motorIds, timeout) {
+        var self = this;
+        timeout = timeout || 500;
+        var start = Date.now();
+        var packets = {};
+
+        return new Promise(function(resolve) {
+          function check() {
+            if (Date.now() - start > timeout) { resolve(packets); return; }
+
+            for (var i = 0; i < self.readBuffer.length - 10; i++) {
+              if (self.readBuffer[i] === 0xFF && self.readBuffer[i+1] === 0xFF &&
+                  self.readBuffer[i+2] === 0xFD && self.readBuffer[i+3] === 0x00) {
+                var packetId = self.readBuffer[i+4];
+                var len = self.readBuffer[i+5] | (self.readBuffer[i+6] << 8);
+                var totalLen = 7 + len;
+
+                if (i + totalLen <= self.readBuffer.length) {
+                  if (self.readBuffer[i+7] === 0x55 && motorIds.indexOf(packetId) !== -1) {
+                    packets[packetId] = self.readBuffer.slice(i, i + totalLen);
+                  }
+                  self.readBuffer = self.readBuffer.slice(i + totalLen);
+                  i = -1;
+
+                  // Check if we got all packets
+                  if (Object.keys(packets).length === motorIds.length) {
+                    resolve(packets);
+                    return;
+                  }
+                }
+              }
+            }
+            setTimeout(check, 5);
+          }
+          check();
+        });
+      },
+
       sendPacket: function(packet, expectResponse, motorId) {
         var self = this;
         if (!self.connected || !self.writer) return Promise.resolve(null);
@@ -350,11 +401,12 @@
       checkAllMotors: function() {
         var self = this;
         var results = {};
+        var allMotors = [11,12,13,14,15,16,17,18];
         var checkNext = function(index) {
-          if (index >= self.motorIds.length) {
+          if (index >= allMotors.length) {
             return Promise.resolve(results);
           }
-          var id = self.motorIds[index];
+          var id = allMotors[index];
           return self.pingMotor(id).then(function(result) {
             results[id] = result;
             return checkNext(index + 1);
@@ -386,11 +438,12 @@
       // Reboot all motors
       rebootAllMotors: function() {
         var self = this;
+        var allMotors = [11,12,13,14,15,16,17,18];
         var rebootNext = function(index) {
-          if (index >= self.motorIds.length) {
+          if (index >= allMotors.length) {
             return Promise.resolve();
           }
-          return self.rebootMotor(self.motorIds[index]).then(function() {
+          return self.rebootMotor(allMotors[index]).then(function() {
             return rebootNext(index + 1);
           });
         };
@@ -411,6 +464,17 @@
               }
               return false;
             }
+            // If enabling torque, set current position as goal position to prevent fast jumps
+            if (enable) {
+              return self.getPosition(id).then(function(currentPos) {
+                return self.setPosition(id, currentPos).then(function() {
+                  return true;
+                });
+              }).catch(function(err) {
+                console.warn('Failed to set initial goal position for motor ' + id + ':', err);
+                return true; // Still return true since torque was enabled
+              });
+            }
             return true;
           } else {
             logConsole('Motor ' + id + ' not responding', 'error');
@@ -421,25 +485,63 @@
 
       setTorqueMultiple: function(ids, enable) {
         var self = this;
-        var results = { success: [], failed: [] };
-        var setNext = function(index) {
-          if (index >= ids.length) {
-            return Promise.resolve(results);
-          }
-          return self.setTorque(ids[index], enable).then(function(ok) {
-            if (ok) {
-              results.success.push(ids[index]);
-            } else {
-              results.failed.push(ids[index]);
-            }
-            return setNext(index + 1);
+
+        // Build sync write packet for torque enable/disable
+        var motorData = [];
+        for (var i = 0; i < ids.length; i++) {
+          motorData.push({
+            id: ids[i],
+            data: [enable ? 1 : 0]
           });
-        };
-        return setNext(0).then(function(results) {
-          if (results.failed.length > 0) {
-            logConsole('Failed to set torque on motors: ' + results.failed.join(', '), 'error');
+        }
+        var torquePacket = this.buildSyncWritePacket(64, 1, motorData);
+
+        // Send the sync write torque command
+        return this.sendPacket(torquePacket, false).then(function() {
+          // If enabling torque, set current positions as goal positions
+          if (enable) {
+            // Sync read current positions from all motors
+            var readPacket = self.buildSyncReadPacket(132, 4, ids);
+            self.readBuffer = [];
+
+            return self.writer.write(readPacket).then(function() {
+              return self.waitForSyncReadPackets(ids);
+            }).then(function(packets) {
+              // Extract positions and build sync write for goal positions
+              var positionData = [];
+              for (var i = 0; i < ids.length; i++) {
+                var id = ids[i];
+                var response = packets[id];
+                var pos = 2048; // default to center
+
+                if (response && response.length >= 15) {
+                  pos = response[9] | (response[10] << 8) | (response[11] << 16) | (response[12] << 24);
+                  if (pos > 0x7FFFFFFF) pos -= 0x100000000;
+                }
+
+                // CRITICAL: Update the motor position cache with actual current positions
+                // This ensures subsequent speed-limited movements start from the correct position
+                motorPositionCache[id] = pos;
+
+                var posUint = pos < 0 ? pos + 0x100000000 : pos;
+                positionData.push({
+                  id: id,
+                  data: [posUint & 0xFF, (posUint >> 8) & 0xFF, (posUint >> 16) & 0xFF, (posUint >> 24) & 0xFF]
+                });
+              }
+
+              // Sync write goal positions
+              var positionPacket = self.buildSyncWritePacket(116, 4, positionData);
+              return self.sendPacket(positionPacket, false);
+            });
           }
-          return results;
+
+          return Promise.resolve();
+        }).then(function() {
+          return { success: ids, failed: [] };
+        }).catch(function(err) {
+          console.error('Error setting torque:', err);
+          return { success: [], failed: ids };
         });
       },
 
@@ -646,31 +748,38 @@
       // Get all 8 motor positions as an array
       getAllPositions: function() {
         var self = this;
-        var promises = this.motorIds.map(function(id) {
-          return self.getPosition(id);
+        if (!self.connected || !self.writer) return Promise.resolve(self.motorIds.map(function() { return 0; }));
+
+        var packet = this.buildSyncReadPacket(132, 4, this.motorIds);
+        self.readBuffer = [];
+
+        return self.writer.write(packet).then(function() {
+          return self.waitForSyncReadPackets(self.motorIds);
+        }).then(function(packets) {
+          var degrees = [];
+          for (var i = 0; i < self.motorIds.length; i++) {
+            var id = self.motorIds[i];
+            var response = packets[id];
+            if (response && response.length >= 15) {
+              var pos = response[9] | (response[10] << 8) | (response[11] << 16) | (response[12] << 24);
+              if (pos > 0x7FFFFFFF) pos -= 0x100000000;
+              motorPositionCache[id] = pos;
+              degrees.push(self.positionToDegrees(pos));
+            } else {
+              degrees.push(self.positionToDegrees(motorPositionCache[id] || 2048));
+            }
+          }
+          return degrees;
         });
-        return Promise.all(promises);
       },
 
-      // Set all 8 motor positions (speed-limited)
-      setAllPositions: function(positions) {
-        return this.setPositionMultipleLimited(this.motorIds, positions);
-      },
-
-      // Convert raw positions array to degrees array
-      jointsToDegrees: function(positions) {
+      // Set all 8 motor positions (speed-limited) - accepts degrees
+      setAllPositions: function(degrees) {
         var self = this;
-        return positions.map(function(pos) {
-          return self.positionToDegrees(pos);
-        });
-      },
-
-      // Convert degrees array to raw positions array
-      degreesToJoints: function(degrees) {
-        var self = this;
-        return degrees.map(function(deg) {
+        var positions = degrees.map(function(deg) {
           return self.degreesToPosition(deg);
         });
+        return this.setPositionMultipleLimited(this.motorIds, positions);
       },
 
       // Forward Kinematics: joint degrees -> coordinates [x, y, z, roll, pitch, yaw]
@@ -683,14 +792,17 @@
         return callIK(coordinates);
       },
 
-      // Get current robot coordinates (combines getAllPositions + jointsToDegrees + FK)
-      getCurrentCoordinates: function() {
+      // Combined: Set head to coordinates directly (does IK conversion internally)
+      setHeadCoordinates: function(coordinates) {
+        var joints = this.coordinatesToJoints(coordinates);
+        return this.setAllPositions(joints);
+      },
+
+      // Combined: Get current head coordinates (does FK conversion internally)
+      getHeadCoordinates: function() {
         var self = this;
-        return this.getAllPositions().then(function(positions) {
-          // Only use first 6 motors for FK (Stewart platform motors 11-16)
-          // Motors 17-18 are ear motors, not part of the Stewart platform
-          var degrees = self.jointsToDegrees(positions.slice(0, 6));
-          return callFK(degrees);
+        return this.getAllPositions().then(function(joints) {
+          return self.jointsToCoordinates(joints);
         });
       }
     };
@@ -723,7 +835,7 @@
 
     function enableAllTorque() {
       if (!Robot.connected) { logConsole('Not connected', 'error'); return; }
-      Robot.setTorqueMultiple(Robot.motorIds, true).then(function(results) {
+      Robot.setTorqueMultiple([11,12,13,14,15,16,17,18], true).then(function(results) {
         if (results.failed.length === 0) {
           logConsole('All motors enabled', 'success');
         }
@@ -732,7 +844,7 @@
 
     function disableAllTorque() {
       if (!Robot.connected) { logConsole('Not connected', 'error'); return; }
-      Robot.setTorqueMultiple(Robot.motorIds, false).then(function(results) {
+      Robot.setTorqueMultiple([11,12,13,14,15,16,17,18], false).then(function(results) {
         if (results.failed.length === 0) {
           logConsole('All motors disabled', 'success');
         }
@@ -855,7 +967,9 @@
     }
 
     // ========== Custom Blocks ==========
-    var MOTORS = [['17','17'],['18','18'],['11','11'],['12','12'],['13','13'],['14','14'],['15','15'],['16','16']];
+    var EARS = [['Left ear (17)','17'],['Right ear (18)','18']];
+    var HEAD_MOTORS = [['11','11'],['12','12'],['13','13'],['14','14'],['15','15'],['16','16']];
+    var ALL_MOTORS = [['Head 11','11'],['Head 12','12'],['Head 13','13'],['Head 14','14'],['Head 15','15'],['Head 16','16'],['Left ear (17)','17'],['Right ear (18)','18']];
     var LOG_TYPES = [['info','info'],['success','success'],['warning','warn'],['error','error']];
 
     // === Connection Blocks ===
@@ -863,7 +977,7 @@
       init: function() {
         this.appendDummyInput()
             .appendField('enable torque joint')
-            .appendField(new Blockly.FieldDropdown(MOTORS), 'MOTOR');
+            .appendField(new Blockly.FieldDropdown(ALL_MOTORS), 'MOTOR');
         this.setPreviousStatement(true, null);
         this.setNextStatement(true, null);
         this.setColour(260);
@@ -879,7 +993,7 @@
       init: function() {
         this.appendDummyInput()
             .appendField('disable torque joint')
-            .appendField(new Blockly.FieldDropdown(MOTORS), 'MOTOR');
+            .appendField(new Blockly.FieldDropdown(ALL_MOTORS), 'MOTOR');
         this.setPreviousStatement(true, null);
         this.setNextStatement(true, null);
         this.setColour(260);
@@ -900,7 +1014,7 @@
       }
     };
     Blockly.JavaScript.forBlock['enable_all'] = function(block) {
-      return 'await Robot.setTorqueMultiple(Robot.motorIds, true);\n';
+      return 'await Robot.setTorqueMultiple([11,12,13,14,15,16,17,18], true);\n';
     };
 
     Blockly.Blocks['disable_all'] = {
@@ -912,7 +1026,7 @@
       }
     };
     Blockly.JavaScript.forBlock['disable_all'] = function(block) {
-      return 'await Robot.setTorqueMultiple(Robot.motorIds, false);\n';
+      return 'await Robot.setTorqueMultiple([11,12,13,14,15,16,17,18], false);\n';
     };
 
     Blockly.Blocks['check_joints'] = {
@@ -925,14 +1039,14 @@
       }
     };
     Blockly.JavaScript.forBlock['check_joints'] = function(block) {
-      return 'await (async function() { var results = await Robot.checkAllMotors(); var ok = [], failed = []; for (var id in results) { if (results[id].ok) ok.push(id); else failed.push(id); } if (failed.length === 0) { logConsole("All " + ok.length + " joints OK", "success"); for (var i = 0; i < Robot.motorIds.length; i++) { var id = Robot.motorIds[i]; var pos = await Robot.getPosition(id); var deg = Robot.positionToDegrees(pos).toFixed(1); logConsole("Joint " + id + ": " + pos + " (" + deg + "°)", "info"); } } else { logConsole("OK: " + ok.join(", ") + " | FAILED: " + failed.join(", "), "error"); } })();\n';
+      return 'await (async function() { var results = await Robot.checkAllMotors(); var ok = [], failed = []; for (var id in results) { if (results[id].ok) ok.push(id); else failed.push(id); } if (failed.length === 0) { logConsole("All " + ok.length + " joints OK", "success"); var allMotors = [11,12,13,14,15,16,17,18]; for (var i = 0; i < allMotors.length; i++) { var id = allMotors[i]; var pos = await Robot.getPosition(id); var deg = Robot.positionToDegrees(pos).toFixed(1); logConsole("Joint " + id + ": " + pos + " (" + deg + "°)", "info"); } } else { logConsole("OK: " + ok.join(", ") + " | FAILED: " + failed.join(", "), "error"); } })();\n';
     };
 
     Blockly.Blocks['ping_joint'] = {
       init: function() {
         this.appendDummyInput()
             .appendField('joint')
-            .appendField(new Blockly.FieldDropdown(MOTORS), 'MOTOR')
+            .appendField(new Blockly.FieldDropdown(ALL_MOTORS), 'MOTOR')
             .appendField('is responding');
         this.setOutput(true, 'Boolean');
         this.setColour(260);
@@ -948,7 +1062,7 @@
       init: function() {
         this.appendDummyInput()
             .appendField('reboot joint')
-            .appendField(new Blockly.FieldDropdown(MOTORS), 'MOTOR');
+            .appendField(new Blockly.FieldDropdown(ALL_MOTORS), 'MOTOR');
         this.setPreviousStatement(true, null);
         this.setNextStatement(true, null);
         this.setColour(260);
@@ -978,7 +1092,7 @@
       init: function() {
         this.appendValueInput('JOINT').setCheck('Number')
             .appendField('set joint')
-            .appendField(new Blockly.FieldDropdown(MOTORS), 'MOTOR')
+            .appendField(new Blockly.FieldDropdown(ALL_MOTORS), 'MOTOR')
             .appendField('to');
         this.setPreviousStatement(true, null);
         this.setNextStatement(true, null);
@@ -995,15 +1109,15 @@
     Blockly.Blocks['set_degrees'] = {
       init: function() {
         this.appendValueInput('DEGREES').setCheck('Number')
-            .appendField('set joint')
-            .appendField(new Blockly.FieldDropdown(MOTORS), 'MOTOR')
+            .appendField('set')
+            .appendField(new Blockly.FieldDropdown(EARS), 'MOTOR')
             .appendField('to');
         this.appendDummyInput().appendField('degrees');
         this.setInputsInline(true);
         this.setPreviousStatement(true, null);
         this.setNextStatement(true, null);
         this.setColour(160);
-        this.setTooltip('Set joint angle in degrees (0 = center)');
+        this.setTooltip('Set ear angle in degrees (0 = center)');
       }
     };
     Blockly.JavaScript.forBlock['set_degrees'] = function(block) {
@@ -1016,7 +1130,7 @@
       init: function() {
         this.appendDummyInput()
             .appendField('value of joint')
-            .appendField(new Blockly.FieldDropdown(MOTORS), 'MOTOR');
+            .appendField(new Blockly.FieldDropdown(ALL_MOTORS), 'MOTOR');
         this.setOutput(true, 'Number');
         this.setColour(160);
       }
@@ -1029,8 +1143,8 @@
     Blockly.Blocks['get_degrees'] = {
       init: function() {
         this.appendDummyInput()
-            .appendField('degrees of joint')
-            .appendField(new Blockly.FieldDropdown(MOTORS), 'MOTOR');
+            .appendField('degrees of')
+            .appendField(new Blockly.FieldDropdown(EARS), 'MOTOR');
         this.setOutput(true, 'Number');
         this.setColour(160);
       }
@@ -1043,26 +1157,27 @@
     Blockly.Blocks['move_by'] = {
       init: function() {
         this.appendValueInput('AMOUNT').setCheck('Number')
-            .appendField('move joint')
-            .appendField(new Blockly.FieldDropdown(MOTORS), 'MOTOR')
-            .appendField('by');
+            .appendField('move')
+            .appendField(new Blockly.FieldDropdown(EARS), 'MOTOR')
+            .appendField('by')
+            .appendField('degrees');
         this.setPreviousStatement(true, null);
         this.setNextStatement(true, null);
         this.setColour(160);
-        this.setTooltip('Move joint by relative amount');
+        this.setTooltip('Move ear by relative amount in degrees');
       }
     };
     Blockly.JavaScript.forBlock['move_by'] = function(block) {
       var motor = block.getFieldValue('MOTOR');
       var amount = Blockly.JavaScript.valueToCode(block, 'AMOUNT', Blockly.JavaScript.ORDER_ATOMIC) || '0';
-      return 'await Robot.setPositionLimited(' + motor + ', (await Robot.getPosition(' + motor + ')) + (' + amount + '));\n';
+      return 'await Robot.setDegrees(' + motor + ', (await Robot.getDegrees(' + motor + ')) + (' + amount + '));\n';
     };
 
     Blockly.Blocks['move_smooth'] = {
       init: function() {
         this.appendValueInput('JOINT').setCheck('Number')
             .appendField('smooth move joint')
-            .appendField(new Blockly.FieldDropdown(MOTORS), 'MOTOR')
+            .appendField(new Blockly.FieldDropdown(ALL_MOTORS), 'MOTOR')
             .appendField('to');
         this.appendValueInput('DURATION').setCheck('Number').appendField('over');
         this.appendDummyInput().appendField('seconds');
@@ -1083,13 +1198,13 @@
     Blockly.Blocks['set_speed'] = {
       init: function() {
         this.appendValueInput('SPEED').setCheck('Number')
-            .appendField('set joint')
-            .appendField(new Blockly.FieldDropdown(MOTORS), 'MOTOR')
+            .appendField('set')
+            .appendField(new Blockly.FieldDropdown(EARS), 'MOTOR')
             .appendField('speed to');
         this.setPreviousStatement(true, null);
         this.setNextStatement(true, null);
         this.setColour(160);
-        this.setTooltip('Set joint velocity limit (0-1023)');
+        this.setTooltip('Set ear velocity limit (0-1023)');
       }
     };
     Blockly.JavaScript.forBlock['set_speed'] = function(block) {
@@ -1101,51 +1216,32 @@
 
     // === Multi-Motor Blocks ===
     
-    Blockly.Blocks['get_all_joints'] = {
+    Blockly.Blocks['get_head_coordinates'] = {
       init: function() {
-        this.appendDummyInput().appendField('get all joints as list');
+        this.appendDummyInput().appendField('get head coordinates');
         this.setOutput(true, 'Array');
         this.setColour(180);
-        this.setTooltip('Returns list of joint values for motors 11-18');
+        this.setTooltip('Returns [x, y, z, roll, pitch, yaw] for head position');
       }
     };
-    Blockly.JavaScript.forBlock['get_all_joints'] = function(block) {
-      return ['(await Robot.getAllPositions())', Blockly.JavaScript.ORDER_AWAIT];
+    Blockly.JavaScript.forBlock['get_head_coordinates'] = function(block) {
+      return ['(Robot.jointsToCoordinates(await Robot.getAllPositions()))', Blockly.JavaScript.ORDER_FUNCTION_CALL];
     };
 
-    Blockly.Blocks['set_all_joints'] = {
+    Blockly.Blocks['set_head_coordinates'] = {
       init: function() {
-        this.appendValueInput('JOINTS').setCheck('Array')
-            .appendField('set all joints from list');
+        this.appendValueInput('COORDS').setCheck('Array')
+            .appendField('set head to coordinates');
         this.setPreviousStatement(true, null);
         this.setNextStatement(true, null);
         this.setColour(180);
-        this.setTooltip('Set motors 11-18 from a list of 8 joint values');
+        this.setTooltip('Set head position from [x, y, z, roll, pitch, yaw]');
       }
     };
-    Blockly.JavaScript.forBlock['set_all_joints'] = function(block) {
-      var joints = Blockly.JavaScript.valueToCode(block, 'JOINTS', Blockly.JavaScript.ORDER_ATOMIC) || '[]';
-      return 'await Robot.setAllPositions(' + joints + ');\n';
+    Blockly.JavaScript.forBlock['set_head_coordinates'] = function(block) {
+      var coords = Blockly.JavaScript.valueToCode(block, 'COORDS', Blockly.JavaScript.ORDER_ATOMIC) || '[0,0,0,0,0,0]';
+      return 'await Robot.setAllPositions(Robot.coordinatesToJoints(' + coords + '));\n';
     };
-
-    Blockly.Blocks['copy_joint'] = {
-      init: function() {
-        this.appendDummyInput()
-            .appendField('copy joint')
-            .appendField(new Blockly.FieldDropdown(MOTORS), 'FROM')
-            .appendField('to joint')
-            .appendField(new Blockly.FieldDropdown(MOTORS), 'TO');
-        this.setPreviousStatement(true, null);
-        this.setNextStatement(true, null);
-        this.setColour(180);
-      }
-    };
-    Blockly.JavaScript.forBlock['copy_joint'] = function(block) {
-      var from = block.getFieldValue('FROM');
-      var to = block.getFieldValue('TO');
-      return 'await Robot.setPositionLimited(' + to + ', await Robot.getPosition(' + from + '));\n';
-    };
-
     // === Kinematics Blocks ===
 
     var COORDINATE_COMPONENTS = [['x','0'],['y','1'],['z','2'],['roll','3'],['pitch','4'],['yaw','5']];
@@ -1153,10 +1249,10 @@
     Blockly.Blocks['joints_to_coordinates'] = {
       init: function() {
         this.appendValueInput('JOINTS').setCheck('Array')
-            .appendField('joints to coordinates');
+            .appendField('head joints to coordinates');
         this.setOutput(true, 'Array');
         this.setColour(290);
-        this.setTooltip('Convert a list of 8 joint angles IN DEGREES to coordinates [x, y, z, roll, pitch, yaw]. Use "joints to degrees" first if you have raw joint values.');
+        this.setTooltip('Convert a list of 6 head joint angles (degrees) to coordinates [x, y, z, roll, pitch, yaw]');
         this.setHelpUrl('');
       }
     };
@@ -1168,10 +1264,10 @@
     Blockly.Blocks['coordinates_to_joints'] = {
       init: function() {
         this.appendValueInput('COORDINATES').setCheck('Array')
-            .appendField('coordinates to joints');
+            .appendField('coordinates to head joints');
         this.setOutput(true, 'Array');
         this.setColour(290);
-        this.setTooltip('Convert coordinates [x, y, z, roll, pitch, yaw] to a list of 8 joint angles IN DEGREES. Use "degrees to joints" after if you need raw joint values.');
+        this.setTooltip('Convert coordinates [x, y, z, roll, pitch, yaw] to a list of 6 head joint angles (degrees)');
       }
     };
     Blockly.JavaScript.forBlock['coordinates_to_joints'] = function(block) {
@@ -1221,52 +1317,12 @@
       return ['(' + coordinates + ')[' + component + ']', Blockly.JavaScript.ORDER_MEMBER];
     };
 
-    Blockly.Blocks['get_current_coordinates'] = {
-      init: function() {
-        this.appendDummyInput().appendField('get current coordinates');
-        this.setOutput(true, 'Array');
-        this.setColour(290);
-        this.setTooltip('Get the robot\'s current position as coordinates [x, y, z, roll, pitch, yaw]. Reads all joints and converts to coordinates.');
-      }
-    };
-    Blockly.JavaScript.forBlock['get_current_coordinates'] = function(block) {
-      return ['(await Robot.getCurrentCoordinates())', Blockly.JavaScript.ORDER_AWAIT];
-    };
-
-    Blockly.Blocks['joints_to_degrees'] = {
-      init: function() {
-        this.appendValueInput('JOINTS').setCheck('Array')
-            .appendField('joints to degrees');
-        this.setOutput(true, 'Array');
-        this.setColour(290);
-        this.setTooltip('Convert a list of raw joint values (0-4095) to degrees (-180 to 180). Center position 2048 = 0 degrees.');
-      }
-    };
-    Blockly.JavaScript.forBlock['joints_to_degrees'] = function(block) {
-      var joints = Blockly.JavaScript.valueToCode(block, 'JOINTS', Blockly.JavaScript.ORDER_ATOMIC) || '[]';
-      return ['Robot.jointsToDegrees(' + joints + ')', Blockly.JavaScript.ORDER_FUNCTION_CALL];
-    };
-
-    Blockly.Blocks['degrees_to_joints'] = {
-      init: function() {
-        this.appendValueInput('DEGREES').setCheck('Array')
-            .appendField('degrees to joints');
-        this.setOutput(true, 'Array');
-        this.setColour(290);
-        this.setTooltip('Convert a list of degrees (-180 to 180) to raw joint values (0-4095). 0 degrees = center position 2048.');
-      }
-    };
-    Blockly.JavaScript.forBlock['degrees_to_joints'] = function(block) {
-      var degrees = Blockly.JavaScript.valueToCode(block, 'DEGREES', Blockly.JavaScript.ORDER_ATOMIC) || '[]';
-      return ['Robot.degreesToJoints(' + degrees + ')', Blockly.JavaScript.ORDER_FUNCTION_CALL];
-    };
-
     // === Sensing Blocks ===
     Blockly.Blocks['is_moving'] = {
       init: function() {
         this.appendDummyInput()
             .appendField('joint')
-            .appendField(new Blockly.FieldDropdown(MOTORS), 'MOTOR')
+            .appendField(new Blockly.FieldDropdown(ALL_MOTORS), 'MOTOR')
             .appendField('is moving');
         this.setOutput(true, 'Boolean');
         this.setColour(210);
@@ -1274,15 +1330,15 @@
     };
     Blockly.JavaScript.forBlock['is_moving'] = function(block) {
       var motor = block.getFieldValue('MOTOR');
-      // Check if position changed from cached value
-      return ['(Math.abs((await Robot.getPosition(' + motor + ')) - (motorPositionCache[' + motor + '] || 2048)) > 10)', Blockly.JavaScript.ORDER_AWAIT];
+      // Check if position changed from cached value (threshold: 1 degree)
+      return ['(Math.abs((await Robot.getDegrees(' + motor + ')) - Robot.positionToDegrees(motorPositionCache[' + motor + '] || 2048)) > 1)', Blockly.JavaScript.ORDER_AWAIT];
     };
 
     Blockly.Blocks['wait_until_stopped'] = {
       init: function() {
         this.appendValueInput('TIMEOUT').setCheck('Number')
             .appendField('wait until joint')
-            .appendField(new Blockly.FieldDropdown(MOTORS), 'MOTOR')
+            .appendField(new Blockly.FieldDropdown(ALL_MOTORS), 'MOTOR')
             .appendField('stopped, timeout');
         this.appendDummyInput().appendField('seconds');
         this.setInputsInline(true);
@@ -1294,14 +1350,14 @@
     Blockly.JavaScript.forBlock['wait_until_stopped'] = function(block) {
       var motor = block.getFieldValue('MOTOR');
       var timeout = Blockly.JavaScript.valueToCode(block, 'TIMEOUT', Blockly.JavaScript.ORDER_ATOMIC) || '5';
-      return 'var _start = Date.now(); var _lastPos = await Robot.getPosition(' + motor + '); while (Date.now() - _start < ' + timeout + ' * 1000) { await new Promise(function(r) { setTimeout(r, 50); }); var _newPos = await Robot.getPosition(' + motor + '); if (Math.abs(_newPos - _lastPos) < 5) break; _lastPos = _newPos; }\n';
+      return 'var _start = Date.now(); var _lastPos = await Robot.getDegrees(' + motor + '); while (Date.now() - _start < ' + timeout + ' * 1000) { await new Promise(function(r) { setTimeout(r, 50); }); var _newPos = await Robot.getDegrees(' + motor + '); if (Math.abs(_newPos - _lastPos) < 0.5) break; _lastPos = _newPos; }\n';
     };
 
     Blockly.Blocks['get_load'] = {
       init: function() {
         this.appendDummyInput()
             .appendField('load of joint')
-            .appendField(new Blockly.FieldDropdown(MOTORS), 'MOTOR');
+            .appendField(new Blockly.FieldDropdown(ALL_MOTORS), 'MOTOR');
         this.setOutput(true, 'Number');
         this.setColour(210);
         this.setTooltip('Get joint current load (-1000 to 1000)');
@@ -1316,7 +1372,7 @@
       init: function() {
         this.appendDummyInput()
             .appendField('temperature of joint')
-            .appendField(new Blockly.FieldDropdown(MOTORS), 'MOTOR');
+            .appendField(new Blockly.FieldDropdown(ALL_MOTORS), 'MOTOR');
         this.setOutput(true, 'Number');
         this.setColour(210);
         this.setTooltip('Get joint temperature in °C');
@@ -1331,7 +1387,7 @@
       init: function() {
         this.appendValueInput('MIN').setCheck('Number')
             .appendField('joint')
-            .appendField(new Blockly.FieldDropdown(MOTORS), 'MOTOR')
+            .appendField(new Blockly.FieldDropdown(ALL_MOTORS), 'MOTOR')
             .appendField('between');
         this.appendValueInput('MAX').setCheck('Number').appendField('and');
         this.setInputsInline(true);
@@ -1341,9 +1397,9 @@
     };
     Blockly.JavaScript.forBlock['joint_in_range'] = function(block) {
       var motor = block.getFieldValue('MOTOR');
-      var min = Blockly.JavaScript.valueToCode(block, 'MIN', Blockly.JavaScript.ORDER_ATOMIC) || '0';
-      var max = Blockly.JavaScript.valueToCode(block, 'MAX', Blockly.JavaScript.ORDER_ATOMIC) || '4095';
-      return ['(function() { var j = motorPositionCache[' + motor + '] || 2048; return j >= ' + min + ' && j <= ' + max + '; })()', Blockly.JavaScript.ORDER_FUNCTION_CALL];
+      var min = Blockly.JavaScript.valueToCode(block, 'MIN', Blockly.JavaScript.ORDER_ATOMIC) || '-180';
+      var max = Blockly.JavaScript.valueToCode(block, 'MAX', Blockly.JavaScript.ORDER_ATOMIC) || '180';
+      return ['(function() { var j = Robot.positionToDegrees(motorPositionCache[' + motor + '] || 2048); return j >= ' + min + ' && j <= ' + max + '; })()', Blockly.JavaScript.ORDER_FUNCTION_CALL];
     };
 
     // === Timing Blocks ===
@@ -1429,7 +1485,7 @@
       init: function() {
         this.appendDummyInput()
             .appendField('log joint')
-            .appendField(new Blockly.FieldDropdown(MOTORS), 'MOTOR');
+            .appendField(new Blockly.FieldDropdown(ALL_MOTORS), 'MOTOR');
         this.setPreviousStatement(true, null);
         this.setNextStatement(true, null);
         this.setColour(60);
@@ -1437,7 +1493,7 @@
     };
     Blockly.JavaScript.forBlock['log_joint'] = function(block) {
       var motor = block.getFieldValue('MOTOR');
-      return 'logConsole("Joint ' + motor + ': " + (await Robot.getPosition(' + motor + ')) + " (" + Robot.positionToDegrees(await Robot.getPosition(' + motor + ')).toFixed(1) + "°)", "info");\n';
+      return 'logConsole("Joint ' + motor + ': " + (await Robot.getDegrees(' + motor + ')).toFixed(1) + "°", "info");\n';
     };
 
     Blockly.Blocks['log_type'] = {
@@ -1484,6 +1540,60 @@
     workspace.addChangeListener(function() {
       var code = Blockly.JavaScript.workspaceToCode(workspace);
       document.getElementById('codeOutput').textContent = code || '// Drag blocks here...';
+    });
+
+    // ========== Block Value Preview ==========
+    workspace.addChangeListener(function(event) {
+      if (event.type === Blockly.Events.BLOCK_CLICK) {
+        var block = workspace.getBlockById(event.blockId);
+        if (!block || !Robot.connected) return;
+
+        // Preview blocks that fetch values
+        var blockType = block.type;
+
+        if (blockType === 'get_head_coordinates') {
+          Robot.getAllPositions().then(function(joints) {
+            var coords = Robot.jointsToCoordinates(joints);
+            var formatted = '[' + coords.map(function(v) { return v.toFixed(2); }).join(', ') + ']';
+            logConsole('Head coordinates: ' + formatted, 'info');
+          }).catch(function(e) {
+            logConsole('Failed to get head coordinates: ' + e.message, 'error');
+          });
+        } else if (blockType === 'get_degrees') {
+          var motor = block.getFieldValue('MOTOR');
+          Robot.getDegrees(motor).then(function(degrees) {
+            var motorName = motor === '17' ? 'Left ear' : motor === '18' ? 'Right ear' : 'Motor ' + motor;
+            logConsole(motorName + ' angle: ' + degrees.toFixed(1) + '°', 'info');
+          }).catch(function(e) {
+            logConsole('Failed to get degrees: ' + e.message, 'error');
+          });
+        } else if (blockType === 'get_joint') {
+          var motor = block.getFieldValue('MOTOR');
+          Robot.getPosition(motor).then(function(pos) {
+            var degrees = Robot.positionToDegrees(pos);
+            var motorName = motor === '17' ? 'Left ear' : motor === '18' ? 'Right ear' : 'Motor ' + motor;
+            logConsole(motorName + ': ' + pos + ' (' + degrees.toFixed(1) + '°)', 'info');
+          }).catch(function(e) {
+            logConsole('Failed to get position: ' + e.message, 'error');
+          });
+        } else if (blockType === 'get_load') {
+          var motor = block.getFieldValue('MOTOR');
+          Robot.getLoad(motor).then(function(load) {
+            var motorName = motor === '17' ? 'Left ear' : motor === '18' ? 'Right ear' : 'Motor ' + motor;
+            logConsole(motorName + ' load: ' + load, 'info');
+          }).catch(function(e) {
+            logConsole('Failed to get load: ' + e.message, 'error');
+          });
+        } else if (blockType === 'get_temperature') {
+          var motor = block.getFieldValue('MOTOR');
+          Robot.getTemperature(motor).then(function(temp) {
+            var motorName = motor === '17' ? 'Left ear' : motor === '18' ? 'Right ear' : 'Motor ' + motor;
+            logConsole(motorName + ' temperature: ' + temp + '°C', 'info');
+          }).catch(function(e) {
+            logConsole('Failed to get temperature: ' + e.message, 'error');
+          });
+        }
+      }
     });
 
     // ========== Multi-Select Functionality ==========
@@ -1726,6 +1836,10 @@
     // ========== JS to Blockly Converter ==========
     function jsToBlocks(jsCode) {
       try {
+        // Strip 'await' keywords since Blockly doesn't use async/await
+        // All blocks execute sequentially anyway
+        jsCode = jsCode.replace(/\bawait\s+/g, '');
+
         // Parse JavaScript to AST
         var ast = acorn.parse(jsCode, { ecmaVersion: 2020, sourceType: 'script' });
 
@@ -1969,8 +2083,33 @@
           block.setFieldValue('FROM_START', 'WHERE');
           var listBlock = processExpression(node.left.object, false);
           if (listBlock) connectValue(block, 'LIST', listBlock);
-          var indexBlock = processExpression(node.left.property, false);
-          if (indexBlock) connectValue(block, 'AT', indexBlock);
+
+          // Blockly uses 1-based indexing, JavaScript uses 0-based
+          // For literal numbers, add 1 to convert from JS (0-based) to Blockly (1-based)
+          if (node.left.property.type === 'Literal' && typeof node.left.property.value === 'number') {
+            var adjustedIndexBlock = workspace.newBlock('math_number');
+            adjustedIndexBlock.initSvg();
+            adjustedIndexBlock.setFieldValue(String(node.left.property.value + 1), 'NUM');
+            adjustedIndexBlock.render();
+            connectValue(block, 'AT', adjustedIndexBlock);
+          } else {
+            // For variables/expressions, wrap in (index + 1)
+            var indexBlock = processExpression(node.left.property, false);
+            if (indexBlock) {
+              var addBlock = workspace.newBlock('math_arithmetic');
+              addBlock.initSvg();
+              addBlock.setFieldValue('ADD', 'OP');
+              connectValue(addBlock, 'A', indexBlock);
+              var oneBlock = workspace.newBlock('math_number');
+              oneBlock.initSvg();
+              oneBlock.setFieldValue('1', 'NUM');
+              oneBlock.render();
+              connectValue(addBlock, 'B', oneBlock);
+              addBlock.render();
+              connectValue(block, 'AT', addBlock);
+            }
+          }
+
           var valueBlock = processExpression(node.right, false);
           if (valueBlock) connectValue(block, 'TO', valueBlock);
           block.render();
@@ -2028,15 +2167,56 @@
         if (node.callee.type === 'MemberExpression' &&
             node.callee.object.name === 'Math') {
           var mathFunc = node.callee.property.name;
+
+          // Trigonometric functions use math_trig block
+          var trigOpMap = {
+            'sin': 'SIN',
+            'cos': 'COS',
+            'tan': 'TAN',
+            'asin': 'ASIN',
+            'acos': 'ACOS',
+            'atan': 'ATAN'
+          };
+          if (trigOpMap[mathFunc] && node.arguments.length >= 1) {
+            var block = workspace.newBlock('math_trig');
+            block.setFieldValue(trigOpMap[mathFunc], 'OP');
+            block.initSvg();
+
+            // Extract the angle value from the conversion pattern
+            // Pattern: Math.cos(angle * Math.PI / 180) -> extract 'angle'
+            var arg = node.arguments[0];
+            var angleExpr = arg;
+
+            // Check if argument is (expr * Math.PI / 180) - degrees to radians conversion
+            if (arg.type === 'BinaryExpression' && arg.operator === '/') {
+              var left = arg.left;
+              var right = arg.right;
+              // Check for (expr * Math.PI) / 180
+              if (left.type === 'BinaryExpression' && left.operator === '*' &&
+                  right.type === 'Literal' && right.value === 180) {
+                // Check if left side is expr * Math.PI
+                if (left.right.type === 'MemberExpression' &&
+                    left.right.object.name === 'Math' &&
+                    left.right.property.name === 'PI') {
+                  // Found the pattern! Extract the angle expression
+                  angleExpr = left.left;
+                }
+              }
+            }
+
+            var argBlock = processExpression(angleExpr, false);
+            if (argBlock) connectValue(block, 'NUM', argBlock);
+            block.render();
+            return block;
+          }
+
+          // Other single-argument math functions use math_single block
           var mathOpMap = {
             'floor': 'ROUNDDOWN',
             'ceil': 'ROUNDUP',
             'round': 'ROUND',
             'abs': 'ABS',
-            'sqrt': 'ROOT',
-            'sin': 'SIN',
-            'cos': 'COS',
-            'tan': 'TAN'
+            'sqrt': 'ROOT'
           };
           if (mathOpMap[mathFunc] && node.arguments.length >= 1) {
             var block = workspace.newBlock('math_single');
@@ -2120,6 +2300,35 @@
           '+': 'ADD', '-': 'MINUS', '*': 'MULTIPLY', '/': 'DIVIDE', '%': 'MODULO'
         };
 
+        // Special case: inverse trig functions with radian-to-degree conversion
+        // Pattern: Math.asin(x) * 180 / Math.PI -> extract as asin(x) block
+        if (node.operator === '/' && node.right.type === 'MemberExpression' &&
+            node.right.object.name === 'Math' && node.right.property.name === 'PI') {
+          var left = node.left;
+          // Check for (Math.asin(x) * 180)
+          if (left.type === 'BinaryExpression' && left.operator === '*' &&
+              left.right.type === 'Literal' && left.right.value === 180) {
+            var trigCall = left.left;
+            // Check if it's an inverse trig function
+            if (trigCall.type === 'CallExpression' &&
+                trigCall.callee.type === 'MemberExpression' &&
+                trigCall.callee.object.name === 'Math') {
+              var funcName = trigCall.callee.property.name;
+              var inverseTrigMap = { 'asin': 'ASIN', 'acos': 'ACOS', 'atan': 'ATAN' };
+              if (inverseTrigMap[funcName] && trigCall.arguments.length >= 1) {
+                // Found the pattern! Create math_trig block for inverse function
+                var block = workspace.newBlock('math_trig');
+                block.setFieldValue(inverseTrigMap[funcName], 'OP');
+                block.initSvg();
+                var argBlock = processExpression(trigCall.arguments[0], false);
+                if (argBlock) connectValue(block, 'NUM', argBlock);
+                block.render();
+                return block;
+              }
+            }
+          }
+        }
+
         if (['==', '===', '!=', '!==', '<', '<=', '>', '>='].includes(node.operator)) {
           var block = workspace.newBlock('logic_compare');
           block.setFieldValue(opMap[node.operator], 'OP');
@@ -2176,6 +2385,15 @@
 
       // Member expression: obj.prop or arr[i]
       if (node.type === 'MemberExpression') {
+        // Math.PI -> math_constant block with PI value
+        if (!node.computed && node.object.name === 'Math' && node.property.name === 'PI') {
+          var block = workspace.newBlock('math_constant');
+          block.initSvg();
+          block.setFieldValue('PI', 'CONSTANT');
+          block.render();
+          return block;
+        }
+
         // arr.length -> lists_length
         if (!node.computed && node.property.name === 'length') {
           var block = workspace.newBlock('lists_length');
@@ -2194,8 +2412,33 @@
           block.setFieldValue('FROM_START', 'WHERE');
           var listBlock = processExpression(node.object, false);
           if (listBlock) connectValue(block, 'VALUE', listBlock);
-          var indexBlock = processExpression(node.property, false);
-          if (indexBlock) connectValue(block, 'AT', indexBlock);
+
+          // Blockly uses 1-based indexing, JavaScript uses 0-based
+          // For literal numbers, add 1 to convert from JS (0-based) to Blockly (1-based)
+          if (node.property.type === 'Literal' && typeof node.property.value === 'number') {
+            var adjustedIndexBlock = workspace.newBlock('math_number');
+            adjustedIndexBlock.initSvg();
+            adjustedIndexBlock.setFieldValue(String(node.property.value + 1), 'NUM');
+            adjustedIndexBlock.render();
+            connectValue(block, 'AT', adjustedIndexBlock);
+          } else {
+            // For variables/expressions, wrap in (index + 1)
+            var indexBlock = processExpression(node.property, false);
+            if (indexBlock) {
+              var addBlock = workspace.newBlock('math_arithmetic');
+              addBlock.initSvg();
+              addBlock.setFieldValue('ADD', 'OP');
+              connectValue(addBlock, 'A', indexBlock);
+              var oneBlock = workspace.newBlock('math_number');
+              oneBlock.initSvg();
+              oneBlock.setFieldValue('1', 'NUM');
+              oneBlock.render();
+              connectValue(addBlock, 'B', oneBlock);
+              addBlock.render();
+              connectValue(block, 'AT', addBlock);
+            }
+          }
+
           block.render();
           return block;
         }
@@ -2203,6 +2446,21 @@
 
       // Array expression [1, 2, 3]
       if (node.type === 'ArrayExpression') {
+        // Special case: 6-element arrays are coordinates [x, y, z, roll, pitch, yaw]
+        // Use the child-friendly "create coordinates" block instead of generic list
+        if (node.elements.length === 6) {
+          var block = workspace.newBlock('create_coordinates');
+          block.initSvg();
+          var fieldNames = ['X', 'Y', 'Z', 'ROLL', 'PITCH', 'YAW'];
+          for (var i = 0; i < 6; i++) {
+            var elemBlock = processExpression(node.elements[i], false);
+            if (elemBlock) connectValue(block, fieldNames[i], elemBlock);
+          }
+          block.render();
+          return block;
+        }
+
+        // Generic list for other cases
         var block = workspace.newBlock('lists_create_with');
         block.initSvg();
         // Set number of items
@@ -2353,30 +2611,30 @@
         return block;
       }
 
-      // Robot.getAllPositions() -> get_all_joints
-      if (callee === 'Robot.getAllPositions') {
-        var block = workspace.newBlock('get_all_joints');
-        block.initSvg();
-        block.render();
-        return block;
-      }
-
-      // Robot.setAllPositions(arr) -> set_all_joints
-      if (callee === 'Robot.setAllPositions' && args.length >= 1) {
-        var block = workspace.newBlock('set_all_joints');
+      // Robot.setHeadCoordinates(coords) -> set_head_coordinates
+      if (callee === 'Robot.setHeadCoordinates' && args.length >= 1) {
+        var block = workspace.newBlock('set_head_coordinates');
         block.initSvg();
         var listBlock = processExpression(args[0], false);
-        if (listBlock) connectValue(block, 'JOINTS', listBlock);
+        if (listBlock) connectValue(block, 'COORDS', listBlock);
         block.render();
         return block;
       }
 
-      // Robot.copyJoint(from, to) -> copy_joint
-      if (callee === 'Robot.copyJoint' && args.length >= 2) {
-        var block = workspace.newBlock('copy_joint');
+      // Robot.getHeadCoordinates() -> get_head_coordinates
+      if (callee === 'Robot.getHeadCoordinates') {
+        var block = workspace.newBlock('get_head_coordinates');
         block.initSvg();
-        if (args[0].type === 'Literal') block.setFieldValue(String(args[0].value), 'FROM');
-        if (args[1].type === 'Literal') block.setFieldValue(String(args[1].value), 'TO');
+        block.render();
+        return block;
+      }
+
+      // Robot.setAllPositions(Robot.coordinatesToJoints(...)) -> set_head_coordinates (legacy)
+      if (callee === 'Robot.setAllPositions' && args.length >= 1) {
+        var block = workspace.newBlock('set_head_coordinates');
+        block.initSvg();
+        var listBlock = processExpression(args[0], false);
+        if (listBlock) connectValue(block, 'COORDS', listBlock);
         block.render();
         return block;
       }
@@ -2397,34 +2655,6 @@
         block.initSvg();
         var listBlock = processExpression(args[0], false);
         if (listBlock) connectValue(block, 'COORDINATES', listBlock);
-        block.render();
-        return block;
-      }
-
-      // Robot.getCurrentCoordinates() -> get_current_coordinates
-      if (callee === 'Robot.getCurrentCoordinates') {
-        var block = workspace.newBlock('get_current_coordinates');
-        block.initSvg();
-        block.render();
-        return block;
-      }
-
-      // Robot.jointsToDegrees(arr) -> joints_to_degrees
-      if (callee === 'Robot.jointsToDegrees' && args.length >= 1) {
-        var block = workspace.newBlock('joints_to_degrees');
-        block.initSvg();
-        var listBlock = processExpression(args[0], false);
-        if (listBlock) connectValue(block, 'JOINTS', listBlock);
-        block.render();
-        return block;
-      }
-
-      // Robot.degreesToJoints(arr) -> degrees_to_joints
-      if (callee === 'Robot.degreesToJoints' && args.length >= 1) {
-        var block = workspace.newBlock('degrees_to_joints');
-        block.initSvg();
-        var listBlock = processExpression(args[0], false);
-        if (listBlock) connectValue(block, 'DEGREES', listBlock);
         block.render();
         return block;
       }
@@ -2550,8 +2780,8 @@
       var tests = [
         {
           name: 'Simple function call',
-          code: 'Robot.setPositionLimited(17, 2048);',
-          expected: 'set_joint'
+          code: 'Robot.setDegrees(17, 0);',
+          expected: 'set_degrees'
         },
         {
           name: 'Variable declaration',
@@ -2560,7 +2790,7 @@
         },
         {
           name: 'Function call with variable',
-          code: 'let pos = Robot.getPosition(17);',
+          code: 'let deg = Robot.getDegrees(17);',
           expected: 'variables_set'
         },
         {
@@ -2585,8 +2815,8 @@
         },
         {
           name: 'Multiple statements',
-          code: 'Robot.setPositionLimited(17, 2048);\nwait(1);\nlogConsole("done");',
-          expected: 'set_joint'
+          code: 'Robot.setDegrees(17, 0);\nwait(1);\nlogConsole("done");',
+          expected: 'set_degrees'
         }
       ];
 
@@ -2716,9 +2946,9 @@
       // Get available block types
       var availableBlocks = [
         'Connection: enable_torque, disable_torque, enable_all, disable_all, check_joints, ping_joint, reboot_joint, reboot_all',
-        'Single Joint: set_joint (value 0-4095), set_degrees, get_joint, get_degrees, move_by, move_smooth, set_speed',
-        'All Joints: get_all_joints, set_all_joints, copy_joint',
-        'Kinematics: joints_to_coordinates, coordinates_to_joints, create_coordinates, get_coordinate, get_current_coordinates, joints_to_degrees, degrees_to_joints',
+        'Ears (motors 17-18): set_degrees, get_degrees, move_by, set_speed',
+        'Head (coordinate control): get_head_coordinates, set_head_coordinates',
+        'Coordinates: create_coordinates, get_coordinate',
         'Sensing: is_moving, wait_until_stopped, get_load, get_temperature, joint_in_range',
         'Timing: wait, wait_ms, get_time, reset_timer, timer_value',
         'Output: log, log_joint, log_type, alert',
@@ -2757,53 +2987,64 @@
         var systemPrompt = 'You are an AI assistant helping users program a robot called Reachy Mini using JavaScript. ' +
           'The code you write will be converted to visual Blockly blocks, so you MUST use only supported syntax.\n\n' +
           'ROBOT ARCHITECTURE:\n' +
-          'Reachy Mini uses a STEWART PLATFORM for head movement. This is a parallel robot mechanism where ' +
-          '6 motors (11-16) work together to control head position in 6DOF (x, y, z, roll, pitch, yaw). ' +
-          'You CANNOT move the head by controlling individual motors directly! You MUST use Forward/Inverse Kinematics:\n' +
-          '- Forward Kinematics (FK): joint angles -> head coordinates [x,y,z,roll,pitch,yaw]\n' +
-          '- Inverse Kinematics (IK): head coordinates -> joint angles\n\n' +
-          'Motors 17-18 are independent ear motors that CAN be controlled directly.\n\n' +
-          'IMPORTANT WORKFLOW FOR HEAD MOVEMENT:\n' +
-          '1. Get current coordinates: var coords = Robot.getCurrentCoordinates();\n' +
-          '2. Modify coordinates as needed: coords[2] = coords[2] + 10; // move Z up\n' +
-          '3. Convert to joint angles: var joints = Robot.coordinatesToJoints(coords);\n' +
-          '4. Convert angles to raw positions: var positions = Robot.degreesToJoints(joints);\n' +
-          '5. Send to motors: Robot.setAllPositions(positions);\n\n' +
+          'Reachy Mini has two separate control systems:\n\n' +
+          '1. HEAD (motors 11-16): Stewart Platform with 6DOF (x, y, z, roll, pitch, yaw)\n' +
+          '   - ALWAYS use coordinate-based control, NEVER control individual head motors!\n' +
+          '   - Kinematics conversion happens automatically behind the scenes\n' +
+          '   - Coordinates: [x, y, z, roll, pitch, yaw]\n' +
+          '     * Position in millimeters:\n' +
+          '       - X: forward (+) / backward (-)\n' +
+          '       - Y: right (+) / left (-)\n' +
+          '       - Z: up (+) / down (-), where Z=0 is neutral position\n' +
+          '     * Rotation in degrees:\n' +
+          '       - Roll: tilt left/right (rotate around X axis)\n' +
+          '       - Pitch: nod up/down (rotate around Y axis)\n' +
+          '       - Yaw: turn left/right (rotate around Z axis)\n' +
+          '     * Example: [0, 0, 0, 0, 0, 0] = neutral position with no rotation\n' +
+          '     * Example: [10, 0, 0, 0, 0, 0] = move forward 10mm\n' +
+          '     * Example: [0, 5, 0, 0, 0, 0] = move right 5mm\n' +
+          '     * Example: [0, 0, -10, 0, 0, 0] = move down 10mm\n\n' +
+          '2. EARS (motors 17-18): Independent motors that can be controlled directly\n' +
+          '   - Motor 17: Left ear\n' +
+          '   - Motor 18: Right ear\n' +
+          '   - Control using degrees (angle position)\n\n' +
           'AVAILABLE FUNCTIONS:\n\n' +
-          'KINEMATICS (REQUIRED for head movement!):\n' +
-          '- Robot.getCurrentCoordinates() - get current [x,y,z,roll,pitch,yaw]\n' +
-          '- Robot.coordinatesToJoints(coords) - [x,y,z,roll,pitch,yaw] -> 8 joint angles (degrees)\n' +
-          '- Robot.jointsToCoordinates(degreesArray) - 8 joint angles -> [x,y,z,roll,pitch,yaw]\n' +
-          '- Robot.jointsToDegrees(positions) - raw (0-4095) -> degrees\n' +
-          '- Robot.degreesToJoints(degrees) - degrees -> raw (0-4095)\n\n' +
-          'ALL JOINTS:\n' +
-          '- Robot.getAllPositions() - get array of 8 raw positions (0-4095)\n' +
-          '- Robot.setAllPositions([p1,p2,p3,p4,p5,p6,p7,p8]) - set all 8 raw positions\n\n' +
-          'SINGLE JOINT (ears only! motors 17-18):\n' +
-          '- Robot.setPositionLimited(motor, position) - set joint (motor:17-18, position:0-4095)\n' +
-          '- Robot.setDegrees(motor, degrees) - set joint in degrees\n' +
-          '- Robot.getPosition(motor) - get position (0-4095)\n' +
-          '- Robot.getDegrees(motor) - get position in degrees\n' +
-          '- Robot.moveSmooth(motor, position, durationMs) - smooth move\n' +
-          '- Robot.setSpeed(motor, speed) - set speed (0-1023)\n\n' +
-          'TORQUE:\n' +
-          '- Robot.setTorque(motor, true/false) - enable/disable joint\n' +
-          '- Robot.setTorqueMultiple(Robot.motorIds, true/false) - all joints\n' +
-          '- Robot.checkAllMotors() - check status\n' +
-          '- Robot.ping(motor) - ping motor\n' +
-          '- Robot.reboot(motor) - reboot motor\n' +
-          '- Robot.rebootAll() - reboot all\n\n' +
-          'SENSING:\n' +
-          '- Robot.isMoving(motor) - check if moving\n' +
-          '- Robot.getLoad(motor) - get load\n' +
-          '- Robot.getTemperature(motor) - get temp\n\n' +
+          'HEAD CONTROL (coordinate-based only):\n' +
+          '- await Robot.setHeadCoordinates(coords) - set head to coordinates [x, y, z, roll, pitch, yaw]\n' +
+          '  ALWAYS create coordinates inline like: [x, y, z, roll, pitch, yaw]\n' +
+          '  Example: await Robot.setHeadCoordinates([0, 0, -10, 0, 0, 0]);\n' +
+          '  This converts to the "create coordinates" block with labeled fields for children\n' +
+          '- await Robot.getHeadCoordinates() - get current head coordinates\n' +
+          '  Returns [x, y, z, roll, pitch, yaw]\n' +
+          '- To modify coordinates, store in variable first:\n' +
+          '  var coords = [x, y, z, roll, pitch, yaw];\n' +
+          '  coords[2] = -10; // change z\n' +
+          '  await Robot.setHeadCoordinates(coords);\n\n' +
+          'EAR CONTROL (direct motor control):\n' +
+          '- Robot.setDegrees(motor, degrees) - set ear angle in degrees\n' +
+          '- Robot.getDegrees(motor) - get ear angle in degrees\n' +
+          '- Robot.setSpeed(motor, speed) - set ear movement speed (0-1023)\n' +
+          '- Motors: 17 = left ear, 18 = right ear\n\n' +
+          'TORQUE (enable/disable motors):\n' +
+          '- Robot.setTorque(motor, true/false) - enable/disable single motor (11-18)\n' +
+          '- Robot.setTorqueMultiple([11,12,13,14,15,16], true/false) - enable/disable all head motors\n' +
+          '- Robot.setTorqueMultiple([11,12,13,14,15,16,17,18], true/false) - enable/disable all motors (head + ears)\n\n' +
+          'STATUS & DIAGNOSTICS:\n' +
+          '- Robot.checkAllMotors() - check all motors (11-18)\n' +
+          '- Robot.ping(motor) - ping single motor\n' +
+          '- Robot.reboot(motor) - reboot single motor\n' +
+          '- Robot.rebootAll() - reboot all motors (11-18)\n\n' +
+          'SENSING (works with any motor 11-18):\n' +
+          '- Robot.isMoving(motor) - check if motor is moving\n' +
+          '- Robot.getLoad(motor) - get load/torque (-100 to 100)\n' +
+          '- Robot.getTemperature(motor) - get motor temperature\n\n' +
           'TIMING:\n' +
           '- wait(seconds) - wait N seconds (use this for delays!)\n' +
           '- sleep(ms) - wait N milliseconds\n\n' +
           'OUTPUT:\n' +
-          '- logConsole(message) - log message\n' +
+          '- logConsole(message) - log message to console\n' +
           '- logJoint(motor) - log joint position\n' +
-          '- alert(message) - show alert\n\n' +
+          '- alert(message) - show alert dialog\n\n' +
           'SUPPORTED SYNTAX (use only these!):\n' +
           '- var/let variable declarations: var x = 10;\n' +
           '- for loops: for (var i = 0; i < 10; i++) { ... }\n' +
@@ -2811,6 +3052,11 @@
           '- if/else statements: if (x > 10) { ... } else { ... }\n' +
           '- Math operators: +, -, *, /, %\n' +
           '- Math functions: Math.floor(), Math.ceil(), Math.round(), Math.abs(), Math.sqrt()\n' +
+          '- Trigonometry (angles in DEGREES, must convert to radians for JavaScript):\n' +
+          '  Math.cos(angle * Math.PI / 180), Math.sin(angle * Math.PI / 180), Math.tan(angle * Math.PI / 180)\n' +
+          '  Example: Math.cos(90 * Math.PI / 180) for 90 degrees\n' +
+          '  Inverse functions return degrees: Math.asin(x) * 180 / Math.PI, Math.acos(x) * 180 / Math.PI\n' +
+          '- Math constants: Math.PI (represents 180 degrees, use Math.PI / 180 to convert degrees to radians)\n' +
           '- Comparisons: <, >, <=, >=, ==, !=\n' +
           '- Logic: &&, ||, !\n' +
           '- String concatenation: "text " + variable\n' +
@@ -2819,24 +3065,27 @@
           '- function declarations (NEVER write "function myFunc() {}" - inline the code instead!)\n' +
           '- setTimeout, setInterval (use for/while loops with wait() instead)\n' +
           '- arrow functions (no () => {})\n' +
-          '- async/await\n' +
           '- template literals (no `${var}`)\n' +
           '- console.log (use logConsole instead)\n' +
           '- JSON.stringify\n' +
           '- callbacks or closures\n\n' +
-          'EXAMPLE - Nod head up and down using kinematics:\n' +
-          'Robot.setTorqueMultiple(Robot.motorIds, true);\n' +
-          'var baseCoords = Robot.getCurrentCoordinates();\n' +
-          'for (var i = 0; i < 5; i++) {\n' +
-          '  // Move head up\n' +
-          '  var upCoords = [baseCoords[0], baseCoords[1], baseCoords[2] + 5, baseCoords[3], baseCoords[4], baseCoords[5]];\n' +
-          '  var upJoints = Robot.coordinatesToJoints(upCoords);\n' +
-          '  Robot.setAllPositions(Robot.degreesToJoints(upJoints));\n' +
+          'NOTE: You can use "await" with Robot functions - it will be automatically stripped during conversion.\n\n' +
+          'EXAMPLE 1 - Move head down and back to neutral:\n' +
+          'Robot.setTorqueMultiple([11,12,13,14,15,16], true);\n' +
+          'for (var i = 0; i < 3; i++) {\n' +
+          '  await Robot.setHeadCoordinates([0, 0, -10, 0, 0, 0]);\n' +
           '  wait(0.5);\n' +
-          '  // Move head down\n' +
-          '  var downCoords = [baseCoords[0], baseCoords[1], baseCoords[2] - 5, baseCoords[3], baseCoords[4], baseCoords[5]];\n' +
-          '  var downJoints = Robot.coordinatesToJoints(downCoords);\n' +
-          '  Robot.setAllPositions(Robot.degreesToJoints(downJoints));\n' +
+          '  await Robot.setHeadCoordinates([0, 0, 0, 0, 0, 0]);\n' +
+          '  wait(0.5);\n' +
+          '}\n\n' +
+          'EXAMPLE 2 - Move ears back and forth:\n' +
+          'Robot.setTorqueMultiple([17,18], true);\n' +
+          'for (var i = 0; i < 3; i++) {\n' +
+          '  Robot.setDegrees(17, 45);\n' +
+          '  Robot.setDegrees(18, -45);\n' +
+          '  wait(0.5);\n' +
+          '  Robot.setDegrees(17, -45);\n' +
+          '  Robot.setDegrees(18, 45);\n' +
           '  wait(0.5);\n' +
           '}\n\n' +
           'Current workspace code:\n' + context.code + '\n\n' +
@@ -2867,7 +3116,7 @@
             // Send error back to AI for retry
             addAIMessage('Parse error: ' + result.error, 'error');
             addAIMessage('Asking AI to fix...', 'system');
-            var errorMsg = 'Your JavaScript had an error: ' + result.error + '\n\nPlease fix the code. Use only the allowed functions: Robot.setPositionLimited(), Robot.getPosition(), logConsole(), wait(), etc.';
+            var errorMsg = 'Your JavaScript had an error: ' + result.error + '\n\nPlease fix the code. Use only the allowed functions: Robot.setDegrees(), Robot.getDegrees(), Robot.setTorque(), Robot.setTorqueMultiple(), logConsole(), wait(), etc. For head control, use coordinate arrays [x,y,z,roll,pitch,yaw].';
             aiChatHistory.push({ role: 'user', content: errorMsg });
 
             var retryResponse = await callLLM(systemPrompt, aiChatHistory);

@@ -7,7 +7,8 @@
     "start": "rimraf dist pkg && webpack serve --open",
     "test": "jest tests/jsToBlockTree.test.js --verbose",
     "test:wasm": "cargo test && wasm-pack test --headless",
-    "test:e2e": "jest tests/jsToBlocks.test.js --verbose"
+    "test:e2e": "jest tests/jsToBlocks.test.js --verbose",
+    "test:kinematics": "echo 'Open http://localhost:8080/test-kinematics.html to run kinematics tests' && npm start"
   },
   "devDependencies": {
     "@wasm-tool/wasm-pack-plugin": "^1.1.0",

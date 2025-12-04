@@ -187,7 +187,7 @@ impl Kinematics {
     #[allow(non_snake_case)]
     pub fn forward_kinematics(
         &mut self,
-        joint_angles: Vec<f32>,
+        joint_angles: &[f32],
         body_yaw: Option<f32>,
     ) -> Matrix4<f32> {
         if self.branches.len() != 6 {
@@ -376,7 +376,7 @@ mod tests {
     fn test_forward_kinematics() {
         let mut kinematics = initialize_kinematics();
         let joints = vec![0.3, 0.0, 0.0, 0.0, 0.0, 0.0];
-        let mut t = kinematics.forward_kinematics(joints, None);
+        let mut t = kinematics.forward_kinematics(&joints, None);
         t[(2, 3)] -= HEAD_Z_OFFSET;
         let t_flat = t.as_slice().to_vec();
         let expected_res = [
@@ -424,9 +424,9 @@ mod tests {
             nalgebra::Matrix4::new_translation(&nalgebra::Vector3::new(0.0, 0.0, HEAD_Z_OFFSET));
         let r = kinematics.inverse_kinematics(t_world_platform, None);
         kinematics.reset_forward_kinematics(t_world_platform);
-        let mut t = kinematics.forward_kinematics(r.clone(), None);
+        let mut t = kinematics.forward_kinematics(&r, None);
         for _ in 0..100 {
-            t = kinematics.forward_kinematics(r.clone(), None);
+            t = kinematics.forward_kinematics(&r, None);
         }
         let t_flat = t.as_slice().to_vec();
         let expected_res = t_world_platform.as_slice().to_vec();
@@ -444,9 +444,9 @@ mod tests {
             nalgebra::Matrix4::new_translation(&nalgebra::Vector3::new(0.0, 0.0, HEAD_Z_OFFSET));
         let r = kinematics.inverse_kinematics(t_world_platform, Some(body_yaw));
         kinematics.reset_forward_kinematics(t_world_platform);
-        let mut t = kinematics.forward_kinematics(r.clone(), Some(body_yaw));
+        let mut t = kinematics.forward_kinematics(&r, Some(body_yaw));
         for _ in 0..100 {
-            t = kinematics.forward_kinematics(r.clone(), Some(body_yaw));
+            t = kinematics.forward_kinematics(&r, Some(body_yaw));
         }
         let t_flat = t.as_slice().to_vec();
         let expected_res = t_world_platform.as_slice().to_vec();
