@@ -380,7 +380,13 @@
         <div class="tab active" onclick="switchTab('console')">Console</div>
       </div>
       <div class="tab-content" id="codeTab">
-        <div class="sidebar-header">Generated JavaScript</div>
+        <div class="sidebar-header" style="display: flex; justify-content: space-between; align-items: center;">
+          <span>Generated Code</span>
+          <select id="languageSelect" style="background: #333; border: 1px solid #555; color: #ccc; padding: 2px 6px; font-size: 10px; border-radius: 3px;" onchange="updateCodeOutput()">
+            <option value="javascript">JavaScript</option>
+            <option value="python">Python</option>
+          </select>
+        </div>
         <div class="code-output" id="codeOutput">// Drag blocks here...</div>
       </div>
       <div class="tab-content active" id="consoleTab">
