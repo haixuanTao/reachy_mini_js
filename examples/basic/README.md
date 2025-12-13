@@ -1,3 +1,17 @@
+---
+title: Reachy Mini Basic Example
+emoji: 📊
+colorFrom: green
+colorTo: green
+sdk: static
+pinned: false
+tags:
+ - reachy_mini
+ - reachy_mini_js_app
+license: apache-2.0
+short_description: Basic standalone HTML example for Reachy Mini
+---
+
 # Basic Example
 
 A simple, **standalone** single-file HTML example demonstrating core Reachy Mini functionality.
