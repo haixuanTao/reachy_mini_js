@@ -4,12 +4,12 @@ emoji: 🎮
 colorFrom: green
 colorTo: green
 sdk: static
-pinned: false
 tags:
- - reachy_mini
- - reachy_mini_js_app
+  - reachy_mini
+  - reachy_mini_js_app
 license: apache-2.0
 short_description: Full-featured control interface for Reachy Mini
+pinned: false
 ---
 
 # Reachy Mini Simple Test Example

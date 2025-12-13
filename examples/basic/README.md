@@ -4,12 +4,12 @@ emoji: 📊
 colorFrom: green
 colorTo: green
 sdk: static
-pinned: false
 tags:
- - reachy_mini
- - reachy_mini_js_app
+  - reachy_mini
+  - reachy_mini_js_app
 license: apache-2.0
 short_description: Basic standalone HTML example for Reachy Mini
+pinned: false
 ---
 
 # Basic Example
@@ -23,6 +23,7 @@ A simple, **standalone** single-file HTML example demonstrating core Reachy Mini
 1. **Download `index.html`** (just this one file!)
 
 2. **Start a local server** (required for ES modules):
+
    ```bash
    # Using Python
    python3 -m http.server 8080
@@ -35,11 +36,13 @@ A simple, **standalone** single-file HTML example demonstrating core Reachy Mini
    ```
 
 3. **Open in browser**:
+
    ```
    http://localhost:8080/index.html
    ```
 
 4. **Connect your robot**:
+
    - Ensure Reachy Mini is connected via USB, OR
    - Start the WebSocket server on `ws://localhost:8000`
 
@@ -48,6 +51,7 @@ A simple, **standalone** single-file HTML example demonstrating core Reachy Mini
 ## How It Works
 
 The example loads `reachy-mini` directly from unpkg CDN:
+
 ```javascript
 import init, { ... } from 'https://unpkg.com/reachy-mini@0.2.0';
 ```
@@ -71,14 +75,17 @@ No build tools, no npm install, just one HTML file!
 ## Troubleshooting
 
 **"Failed to resolve module specifier"**
+
 - Make sure you ran `npm install` from the project root
 - Verify you're accessing via a web server (not file://)
 
 **"WebSerial not available"**
+
 - Use Chrome or Edge browser
 - Check that you're on HTTPS or localhost
 
 **"Connection failed"**
+
 - Check USB connection
 - Try unplugging/replugging the adapter
 - If using WebSocket, ensure server is running on port 8000
@@ -86,5 +93,6 @@ No build tools, no npm install, just one HTML file!
 ## Next Steps
 
 Check out the other examples:
+
 - `examples/simple-test/` - Full-featured control interface
 - `examples/blockly/` - Visual programming interface
