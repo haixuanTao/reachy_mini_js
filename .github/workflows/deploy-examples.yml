@@ -1,0 +1,123 @@
+name: Deploy All Examples
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'examples/**'
+      - 'src/**'
+      - 'Cargo.toml'
+      - '.github/workflows/deploy-examples.yml'
+  workflow_dispatch:
+
+env:
+  RUSTFLAGS: --cfg=web_sys_unstable_apis
+
+jobs:
+  # First job: discover all examples
+  discover:
+    runs-on: ubuntu-latest
+    outputs:
+      examples: ${{ steps.get-examples.outputs.examples }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Get list of examples
+        id: get-examples
+        run: |
+          # Get all directories in examples/
+          EXAMPLES=$(ls -d examples/*/ | xargs -n 1 basename | jq -R -s -c 'split("\n")[:-1]')
+          echo "examples=$EXAMPLES" >> $GITHUB_OUTPUT
+          echo "Found examples: $EXAMPLES"
+
+  # Second job: build WASM package once (shared by all examples that need it)
+  build-wasm:
+    runs-on: ubuntu-latest
+    needs: discover
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+
+      - name: Install wasm-pack
+        run: cargo install wasm-pack
+
+      - name: Install root npm dependencies
+        run: npm install
+
+      - name: Build WASM package
+        run: npm run build
+
+      - name: Upload WASM artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: wasm-pkg
+          path: pkg/
+
+  # Third job: build and deploy each example
+  deploy:
+    runs-on: ubuntu-latest
+    needs: [discover, build-wasm]
+    strategy:
+      matrix:
+        example: ${{ fromJson(needs.discover.outputs.examples) }}
+      fail-fast: false
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download WASM artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: wasm-pkg
+          path: pkg/
+
+      - name: Check if example needs building
+        id: check-build
+        run: |
+          if [ -f "examples/${{ matrix.example }}/package.json" ]; then
+            if grep -q '"build"' "examples/${{ matrix.example }}/package.json"; then
+              echo "needs_build=true" >> $GITHUB_OUTPUT
+              echo "Example ${{ matrix.example }} needs building"
+            else
+              echo "needs_build=false" >> $GITHUB_OUTPUT
+              echo "Example ${{ matrix.example }} does not need building"
+            fi
+          else
+            echo "needs_build=false" >> $GITHUB_OUTPUT
+            echo "Example ${{ matrix.example }} has no package.json"
+          fi
+
+      - name: Build example
+        if: steps.check-build.outputs.needs_build == 'true'
+        run: |
+          cd examples/${{ matrix.example }}
+          npm install
+          npm run build
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+
+      - name: Install Hugging Face Hub CLI
+        run: pip install -U huggingface_hub
+
+      - name: Push to Hugging Face Space
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          # Determine what to upload based on whether it was built
+          if [ "${{ steps.check-build.outputs.needs_build }}" == "true" ]; then
+            UPLOAD_PATH="./examples/${{ matrix.example }}/dist"
+          else
+            UPLOAD_PATH="./examples/${{ matrix.example }}"
+          fi
+
+          hf upload \
+            --repo-type space \
+            haixuantao/reachy-mini-${{ matrix.example }} \
+            $UPLOAD_PATH \
+            . \
+            --commit-message "Deploy ${{ matrix.example }} example from GitHub Action ${{ github.sha }}"
