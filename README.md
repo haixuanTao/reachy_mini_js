@@ -1,133 +1,129 @@
-# Reachy Mini 🤖
+# Reachy Mini
 
-> Browser-based control library for Reachy Mini robot using WebAssembly
-
-[![npm](https://img.shields.io/npm/v/reachy-mini.svg)](https://www.npmjs.com/package/reachy-mini)
-[![WebAssembly](https://img.shields.io/badge/WebAssembly-654FF0?logo=webassembly&logoColor=fff)](https://webassembly.org/)
-
-High-performance JavaScript package for controlling the Reachy Mini humanoid robot head. Built with Rust/WASM for real-time kinematics and motor control.
-
-## Features
-
-- 🚀 WebAssembly-powered kinematics (forward & inverse)
-- 🔌 WebSerial (USB) or WebSocket connectivity
-- 📱 Cross-platform (Desktop Chrome/Edge, Android with WebUSB)
-- 🎬 Record and replay robot movements
-- 🔧 Direct Dynamixel XL330 motor control (8 servos, IDs 11-18)
-
-## Installation
+Browser-based control for Reachy Mini robot via WebAssembly.
 
 ```bash
 npm install reachy-mini
 ```
 
-## Usage in HTML (CDN)
+## Complete Example
 
-```html
-<!DOCTYPE html>
-<html>
-<head>
-    <title>Reachy Mini Control</title>
-</head>
-<body>
-    <h1>Reachy Mini Control</h1>
-    <button id="connect-btn">Connect</button>
-    <button id="enable-btn">Enable Torque</button>
-    <button id="test-btn">Test Kinematics</button>
-    <button id="disable-btn">Disable Torque</button>
+```js
+import init, {
+  // Connection
+  connect,
+  disconnect,
+  is_connected,
 
-    <script type="module">
-        // Import from CDN (no npm install needed!)
-        import init, {
-            connect,
-            torque_on,
-            torque_off,
-            forward_kinematics,
-            inverse_kinematics
-        } from 'https://unpkg.com/reachy-mini@0.2.0';
+  // Head pose (Cartesian)
+  get_head_pose,
+  set_head_pose,
 
-        // Initialize WASM module
-        await init();
+  // Joints (degrees)
+  get_head_joints,
+  set_head_joints,
+  get_all_joints,
+  set_all_joints,
 
-        document.getElementById('connect-btn').onclick = async () => {
-            await connect();
-            console.log('Connected!');
-        };
+  // Antennas
+  get_antennas,
+  set_antennas,
+  get_left_antenna,
+  set_left_antenna,
+  get_right_antenna,
+  set_right_antenna,
 
-        document.getElementById('enable-btn').onclick = async () => {
-            await torque_on();
-            console.log('Motors enabled');
-        };
+  // Torque
+  enable_torque,
+  disable_torque,
+  enable_head_torque,
+  disable_head_torque,
+  enable_antenna_torque,
+  disable_antenna_torque,
+  enable_left_antenna_torque,
+  disable_left_antenna_torque,
+  enable_right_antenna_torque,
+  disable_right_antenna_torque,
 
-        document.getElementById('test-btn').onclick = () => {
-            const pose = forward_kinematics([0, 0, 0, 0, 0, 0, 0, 0]);
-            console.log('Pose:', pose);
-            const joints = inverse_kinematics([0, 0, 0, 0, 0, 0]);
-            console.log('Joints:', joints);
-        };
+  // Diagnostics
+  get_motor_temperature,
+  get_motor_load,
+  get_all_motor_temperatures,
+  get_all_motor_loads,
+  get_head_motor_temperatures,
+  get_head_motor_loads,
+  get_antenna_temperatures,
+  get_antenna_loads,
+  get_left_antenna_temperature,
+  get_right_antenna_temperature,
+  get_left_antenna_load,
+  get_right_antenna_load,
 
-        document.getElementById('disable-btn').onclick = async () => {
-            await torque_off();
-            console.log('Motors disabled');
-        };
-    </script>
-</body>
-</html>
+  // Reboot
+  reboot_motor,
+  reboot_all_motors,
+  reboot_head_motors,
+  reboot_antennas,
+  reboot_left_antenna,
+  reboot_right_antenna,
+
+  // Kinematics (offline)
+  forward_kinematics,
+  inverse_kinematics,
+
+  // Recording
+  start_fk_stream,
+  replay_recording,
+  stop,
+  clear_recording,
+  get_recording_length,
+} from "https://unpkg.com/reachy-mini@0.3.1";
+
+await init();
+await connect(); // WARNING: Connect should be in block with user motion like a click
+await enable_torque();
+
+// Head pose: x, y, z (mm), roll, pitch, yaw (degrees)
+await set_head_pose(0, 0, 50, 0, 15, 0);
+const pose = await get_head_pose();
+
+// Joints (degrees)
+await set_head_joints([0, 0, 0, 0, 0, 0]);
+await set_all_joints([0, 0, 0, 0, 0, 0, 45, -45]);
+
+// Antennas
+await set_antennas(45, -45);
+await set_left_antenna(30);
+await set_right_antenna(-30);
+
+// Diagnostics
+const temps = await get_all_motor_temperatures();
+const loads = await get_all_motor_loads();
+
+// Offline kinematics
+const joints = inverse_kinematics([0, 0, 50, 0, 15, 0]);
+const xyz = forward_kinematics([0, 0, 0, 0, 0, 0]);
+
+// Recording
+await start_fk_stream(3000); // record 3s
+await replay_recording();
+
+await disable_torque();
+await disconnect();
 ```
 
-**Note:** Must be served via HTTP (not file://) for ES modules to work. Use `python3 -m http.server 8080` or any local server.
+## Motors
 
-## API
-
-### Connection
-- `connect()` - Connect via WebSocket (ws://localhost:8000) or WebSerial
-- `enableTorque()` - Enable all 8 motors
-- `disableTorque()` - Disable all motors (compliant mode)
-
-### Kinematics
-- `forward_kinematics(angles)` - Joint angles (deg) → [x, y, z, roll, pitch, yaw] (mm, deg)
-- `inverse_kinematics(pose)` - [x, y, z, roll, pitch, yaw] → joint angles (deg)
-- `read_pose(duration?)` - Continuously read and update pose
-
-### Recording
-- `record()` - Record movement for 10 seconds at 50Hz
-- `replay()` - Replay recorded movement
-- `stop()` - Stop recording/playback
-
-## Development
-
-```bash
-npm install          # Install dependencies
-npm start            # Dev server with hot reload
-npm run build        # Production build
-npm test             # Run tests
-```
-
-## Browser Support
-
-Chrome/Edge 89+ (WebSerial), Firefox/Safari (WebSocket only), Android Chrome (WebUSB)
+- **11-16**: Head (parallel kinematics)
+- **17**: Left antenna
+- **18**: Right antenna
 
 ## Hardware
 
-- Reachy Mini robot head with 8× Dynamixel XL330 servos
-- USB-to-serial adapter: Arduino, FTDI, CP210x, CH340, Adafruit, or RPi Pico
-- Baud rate: 1,000,000
-
-## Examples
-
-```bash
-# Standalone HTML example (no npm install needed!)
-cd examples/basic
-python3 -m http.server 8080
-# Open http://localhost:8080/index.html
-
-# Full-featured interface
-cd examples/simple-test && npm install && npm start
-
-# Visual programming with Blockly
-cd examples/blockly && npm install && npm start
-```
+- Reachy Mini Lite ( Wireless supported soon ) with 8× Dynamixel XL330
+- USB serial adapter (1,000,000 baud)
+- Or WebSocket at `ws://localhost:8000/api/move/ws/raw/write`
 
 ## License
 
-MIT - Xavier Tao (tao.xavier@outlook.com)
+MIT
