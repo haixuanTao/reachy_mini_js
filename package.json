@@ -4,7 +4,7 @@
   "version": "0.2.1",
   "scripts": {
     "build": "rimraf dist pkg && webpack && node scripts/copy-helpers.js",
-    "start": "rimraf dist pkg && webpack serve --open",
+    "start": "rimraf dist pkg && webpack serve --open --port 8081",
     "test": "jest tests/jsToBlockTree.test.js --verbose",
     "test:wasm": "cargo test && wasm-pack test --headless",
     "test:e2e": "jest tests/jsToBlocks.test.js --verbose",

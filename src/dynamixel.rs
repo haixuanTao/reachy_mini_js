@@ -1,6 +1,50 @@
+//! # Dynamixel Protocol 2.0
+//!
+//! Low-level packet building and parsing for Dynamixel XL330 motors.
+//!
+//! ## XL330 Control Table (commonly used addresses)
+//!
+//! | Address | Name                | Size | Access |
+//! |---------|---------------------|------|--------|
+//! | 64      | Torque Enable       | 1    | RW     |
+//! | 116     | Goal Position       | 4    | RW     |
+//! | 126     | Present Load        | 2    | R      |
+//! | 132     | Present Position    | 4    | R      |
+//! | 146     | Present Temperature | 1    | R      |
+
 use wasm_bindgen::JsValue;
 
-const CRC_TABLE: [u16; 256] = [
+// ============================================================================
+// Constants
+// ============================================================================
+
+/// Broadcast ID (all motors)
+pub const BROADCAST_ID: u8 = 0xFE;
+
+/// XL330 control table addresses
+pub mod address {
+    pub const TORQUE_ENABLE: u16 = 64;
+    pub const GOAL_POSITION: u16 = 116;
+    pub const PRESENT_LOAD: u16 = 126;
+    pub const PRESENT_POSITION: u16 = 132;
+    pub const PRESENT_TEMPERATURE: u16 = 146;
+}
+
+/// Dynamixel Protocol 2.0 instruction codes
+mod instruction {
+    pub const READ: u8 = 0x02;
+    pub const REBOOT: u8 = 0x08;
+    pub const SYNC_READ: u8 = 0x82;
+    pub const SYNC_WRITE: u8 = 0x83;
+    pub const STATUS: u8 = 0x55;
+}
+
+// ============================================================================
+// CRC Calculation
+// ============================================================================
+
+/// CRC16 lookup table for Dynamixel Protocol 2.0
+static CRC_TABLE: [u16; 256] = [
     0x0000, 0x8005, 0x800F, 0x000A, 0x801B, 0x001E, 0x0014, 0x8011, 0x8033, 0x0036, 0x003C, 0x8039,
     0x0028, 0x802D, 0x8027, 0x0022, 0x8063, 0x0066, 0x006C, 0x8069, 0x0078, 0x807D, 0x8077, 0x0072,
     0x0050, 0x8055, 0x805F, 0x005A, 0x804B, 0x004E, 0x0044, 0x8041, 0x80C3, 0x00C6, 0x00CC, 0x80C9,
@@ -25,180 +69,489 @@ const CRC_TABLE: [u16; 256] = [
     0x0208, 0x820D, 0x8207, 0x0202,
 ];
 
-fn calculate_crc(data: &[u8]) -> u16 {
-    let mut crc: u16 = 0;
-    for &byte in data {
-        let idx = ((crc >> 8) ^ (byte as u16)) as usize & 0xFF;
-        crc = (crc << 8) ^ CRC_TABLE[idx];
-    }
-    crc
+/// Calculate CRC16 for Dynamixel Protocol 2.0
+#[inline]
+fn crc16(data: &[u8]) -> u16 {
+    data.iter().fold(0u16, |crc, &byte| {
+        let idx = ((crc >> 8) ^ byte as u16) as u8;
+        (crc << 8) ^ CRC_TABLE[idx as usize]
+    })
 }
 
-// Dynamixel Protocol 2.0 packets
-// Motors: 1-6 (Stewart platform) + 21, 22 (additional motors)
-pub const SYNC_READ_POSITION: [u8; 22] = [
-    0xFF, 0xFF, 0xFD, 0x00, // Header
-    0xFE, // Broadcast ID
-    0x0F, 0x00, // Length = 15
-    0x82, // SYNC_READ instruction
-    0x84, 0x00, // Address 132 (Present Position)
-    0x04, 0x00, // Data length = 4 bytes
-    0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x15, 0x16, // Motor IDs 1-6, 21, 22
-    0xDD, 0xA5, // CRC
-];
+// ============================================================================
+// Packet Builder
+// ============================================================================
 
-/// Parse a single status packet and return (motor_id, position) if valid
-pub fn parse_status_packet(data: &[u8], offset: usize) -> Result<(u8, i32), JsValue> {
-    if offset + 15 > data.len() {
-        return Err(JsValue::from_str("Not enough data for status packet"));
-    }
-
-    // Check header
-    if data[offset] != 0xFF
-        || data[offset + 1] != 0xFF
-        || data[offset + 2] != 0xFD
-        || data[offset + 3] != 0x00
-    {
-        return Err(JsValue::from_str("Invalid header in status packet"));
-    }
-
-    let motor_id = data[offset + 4];
-    let length = data[offset + 5] as u16 | ((data[offset + 6] as u16) << 8);
-    let instruction = data[offset + 7];
-
-    // Status packet has instruction 0x55
-    if instruction != 0x55 {
-        return Err(JsValue::from_str("Invalid instruction in status packet"));
-    }
-
-    // Check we have enough data (header=4 + id=1 + len=2 + instr=1 + err=1 + data=4 + crc=2 = 15)
-    if length != 8 {
-        return Err(JsValue::from_str("Invalid length in status packet"));
-    }
-
-    let error = data[offset + 8];
-    if error != 0 {}
-
-    // Read position as little-endian i32
-    let pos = data[offset + 9] as i32
-        | ((data[offset + 10] as i32) << 8)
-        | ((data[offset + 11] as i32) << 16)
-        | ((data[offset + 12] as i32) << 24);
-
-    Ok((motor_id, pos))
+/// Packet builder for Dynamixel Protocol 2.0
+///
+/// Pre-allocates buffer and provides fluent API for building packets.
+struct PacketBuilder {
+    buf: Vec<u8>,
 }
 
-pub fn build_sync_write_torque(motor_ids: &[u8], enable: bool) -> Vec<u8> {
-    let len = 7 + 2 * motor_ids.len() as u16; // instr + addr(2) + data_len(2) + (id + value) * n
-
-    let mut packet = vec![
-        0xFF,
-        0xFF,
-        0xFD,
-        0x00,
-        0xFE,
-        (len & 0xFF) as u8,
-        ((len >> 8) & 0xFF) as u8,
-        0x83, // SYNC_WRITE
-        0x40,
-        0x00, // Address 64
-        0x01,
-        0x00, // Data length 1
-    ];
-
-    let value = if enable { 0x01 } else { 0x00 };
-    for &id in motor_ids {
-        packet.push(id);
-        packet.push(value);
+impl PacketBuilder {
+    /// Create new packet with header and motor ID
+    #[inline]
+    fn new(id: u8, capacity: usize) -> Self {
+        let mut buf = Vec::with_capacity(capacity);
+        buf.extend_from_slice(&[0xFF, 0xFF, 0xFD, 0x00, id]);
+        Self { buf }
     }
 
-    let crc = calculate_crc(&packet);
-    packet.push((crc & 0xFF) as u8);
-    packet.push(((crc >> 8) & 0xFF) as u8);
+    /// Set packet length and instruction (call after header)
+    #[inline]
+    fn instruction(mut self, instr: u8, param_len: u16) -> Self {
+        let len = param_len + 3; // params + instr + crc(2)
+        self.buf.push((len & 0xFF) as u8);
+        self.buf.push((len >> 8) as u8);
+        self.buf.push(instr);
+        self
+    }
 
-    packet
+    /// Add a u8 parameter
+    #[inline]
+    fn u8(mut self, val: u8) -> Self {
+        self.buf.push(val);
+        self
+    }
+
+    /// Add a u16 parameter (little-endian)
+    #[inline]
+    fn u16_le(mut self, val: u16) -> Self {
+        self.buf.push((val & 0xFF) as u8);
+        self.buf.push((val >> 8) as u8);
+        self
+    }
+
+    /// Add an i32 parameter (little-endian)
+    #[inline]
+    fn i32_le(mut self, val: i32) -> Self {
+        self.buf.push((val & 0xFF) as u8);
+        self.buf.push(((val >> 8) & 0xFF) as u8);
+        self.buf.push(((val >> 16) & 0xFF) as u8);
+        self.buf.push(((val >> 24) & 0xFF) as u8);
+        self
+    }
+
+    /// Add raw bytes
+    #[inline]
+    fn bytes(mut self, data: &[u8]) -> Self {
+        self.buf.extend_from_slice(data);
+        self
+    }
+
+    /// Finalize packet by appending CRC
+    #[inline]
+    fn build(mut self) -> Vec<u8> {
+        let crc = crc16(&self.buf);
+        self.buf.push((crc & 0xFF) as u8);
+        self.buf.push((crc >> 8) as u8);
+        self.buf
+    }
 }
 
+// ============================================================================
+// Packet Building Functions
+// ============================================================================
+
+/// Build READ packet for a single motor.
+///
+/// # Example
+/// ```ignore
+/// let packet = build_read_packet(11, address::PRESENT_TEMPERATURE, 1);
+/// ```
+#[inline]
+pub fn build_read_packet(motor_id: u8, addr: u16, length: u16) -> Vec<u8> {
+    PacketBuilder::new(motor_id, 14)
+        .instruction(instruction::READ, 4)
+        .u16_le(addr)
+        .u16_le(length)
+        .build()
+}
+
+/// Build REBOOT packet for a single motor.
+#[inline]
+pub fn build_reboot_packet(motor_id: u8) -> Vec<u8> {
+    PacketBuilder::new(motor_id, 10)
+        .instruction(instruction::REBOOT, 0)
+        .build()
+}
+
+/// Build SYNC_READ for Present Position (address 132, 4 bytes).
 pub fn build_sync_current_position(motor_ids: &[u8]) -> Vec<u8> {
-    let len = 7 + motor_ids.len() as u16; // instr + addr(2) + data_len(2) + (id + value) * n
+    let param_len = 4 + motor_ids.len() as u16; // addr(2) + data_len(2) + ids
 
-    let mut packet = vec![
-        0xFF,
-        0xFF,
-        0xFD,
-        0x00,
-        0xFE,
-        (len & 0xFF) as u8,
-        ((len >> 8) & 0xFF) as u8,
-        0x82, // SYNC_READ
-        0x84,
-        0x00, // Address 132 (Present Position)
-        0x04,
-        0x00, // Data length = 4 bytes
-    ];
-
-    for &id in motor_ids {
-        packet.push(id);
-    }
-
-    let crc = calculate_crc(&packet);
-    packet.push((crc & 0xFF) as u8);
-    packet.push(((crc >> 8) & 0xFF) as u8);
-
-    packet
+    PacketBuilder::new(BROADCAST_ID, 14 + motor_ids.len())
+        .instruction(instruction::SYNC_READ, param_len)
+        .u16_le(address::PRESENT_POSITION)
+        .u16_le(4)
+        .bytes(motor_ids)
+        .build()
 }
 
-/// Build SYNC_WRITE packet for Goal Position (address 116, 4 bytes)
-/// Positions are raw values (0-4095 for XL330, center = 2048)
+/// Build SYNC_WRITE for Torque Enable (address 64, 1 byte).
+pub fn build_sync_write_torque(motor_ids: &[u8], enable: bool) -> Vec<u8> {
+    let param_len = 4 + (2 * motor_ids.len()) as u16; // addr(2) + data_len(2) + n*(id + val)
+    let val = if enable { 1u8 } else { 0u8 };
+
+    let mut builder = PacketBuilder::new(BROADCAST_ID, 14 + 2 * motor_ids.len())
+        .instruction(instruction::SYNC_WRITE, param_len)
+        .u16_le(address::TORQUE_ENABLE)
+        .u16_le(1);
+
+    for &id in motor_ids {
+        builder = builder.u8(id).u8(val);
+    }
+
+    builder.build()
+}
+
+/// Build SYNC_WRITE for Goal Position (address 116, 4 bytes).
 pub fn build_sync_write_position(motor_ids: &[u8], positions: &[i32]) -> Vec<u8> {
-    assert_eq!(
-        motor_ids.len(),
-        positions.len(),
-        "motor_ids and positions must have same length"
-    );
+    debug_assert_eq!(motor_ids.len(), positions.len());
 
-    // Length = Instr(1) + Addr(2) + DataLen(2) + N*(ID + 4 bytes) + CRC(2)
-    //        = 7 + 5*N
-    let len = 7 + 5 * motor_ids.len() as u16;
+    let param_len = 4 + (5 * motor_ids.len()) as u16; // addr(2) + data_len(2) + n*(id + 4)
 
-    let mut packet = vec![
-        0xFF,
-        0xFF,
-        0xFD,
-        0x00,
-        0xFE, // Broadcast ID
-        (len & 0xFF) as u8,
-        ((len >> 8) & 0xFF) as u8,
-        0x83, // SYNC_WRITE
-        0x74, // Address 116 (Goal Position) - low byte
-        0x00, // Address 116 - high byte
-        0x04, // Data length = 4 bytes
-        0x00,
-    ];
+    let mut builder = PacketBuilder::new(BROADCAST_ID, 14 + 5 * motor_ids.len())
+        .instruction(instruction::SYNC_WRITE, param_len)
+        .u16_le(address::GOAL_POSITION)
+        .u16_le(4);
 
     for (&id, &pos) in motor_ids.iter().zip(positions.iter()) {
-        packet.push(id);
-        packet.push((pos & 0xFF) as u8); // Position byte 0 (LSB)
-        packet.push(((pos >> 8) & 0xFF) as u8); // Position byte 1
-        packet.push(((pos >> 16) & 0xFF) as u8); // Position byte 2
-        packet.push(((pos >> 24) & 0xFF) as u8); // Position byte 3 (MSB)
+        builder = builder.u8(id).i32_le(pos);
     }
 
-    let crc = calculate_crc(&packet);
-    packet.push((crc & 0xFF) as u8);
-    packet.push(((crc >> 8) & 0xFF) as u8);
-
-    packet
+    builder.build()
 }
 
-/// Helper: Convert radians to raw position (center = 2048 = 0 rad)
+/// Build SYNC_WRITE for positions in radians.
 #[inline]
-pub fn radians_to_raw(rad: f32) -> i32 {
-    (2048.0 + rad * 4096.0 / (2.0 * std::f32::consts::PI)) as i32
-}
-
-/// Build SYNC_WRITE for positions in radians
 pub fn build_sync_write_position_radians(motor_ids: &[u8], radians: &[f32]) -> Vec<u8> {
     let positions: Vec<i32> = radians.iter().map(|&r| radians_to_raw(r)).collect();
     build_sync_write_position(motor_ids, &positions)
+}
+
+/// Build SYNC_READ for temperature from multiple motors.
+pub fn build_sync_read_temperature(motor_ids: &[u8]) -> Vec<u8> {
+    let param_len = 4 + motor_ids.len() as u16;
+
+    PacketBuilder::new(BROADCAST_ID, 14 + motor_ids.len())
+        .instruction(instruction::SYNC_READ, param_len)
+        .u16_le(address::PRESENT_TEMPERATURE)
+        .u16_le(1)
+        .bytes(motor_ids)
+        .build()
+}
+
+/// Build SYNC_READ for load from multiple motors.
+pub fn build_sync_read_load(motor_ids: &[u8]) -> Vec<u8> {
+    let param_len = 4 + motor_ids.len() as u16;
+
+    PacketBuilder::new(BROADCAST_ID, 14 + motor_ids.len())
+        .instruction(instruction::SYNC_READ, param_len)
+        .u16_le(address::PRESENT_LOAD)
+        .u16_le(2)
+        .bytes(motor_ids)
+        .build()
+}
+
+// ============================================================================
+// Packet Parsing
+// ============================================================================
+
+/// Status packet parsing error
+#[derive(Debug, Clone, Copy)]
+pub enum ParseError {
+    TooShort,
+    InvalidHeader,
+    InvalidInstruction,
+    InvalidLength,
+    MotorError(u8),
+}
+
+impl From<ParseError> for JsValue {
+    fn from(e: ParseError) -> Self {
+        JsValue::from_str(match e {
+            ParseError::TooShort => "Packet too short",
+            ParseError::InvalidHeader => "Invalid header",
+            ParseError::InvalidInstruction => "Invalid instruction",
+            ParseError::InvalidLength => "Invalid length",
+            ParseError::MotorError(code) => {
+                return JsValue::from_str(&format!("Motor error: 0x{:02X}", code))
+            }
+        })
+    }
+}
+
+/// Validate packet header and return (id, length, error_byte, data_start)
+#[inline]
+fn validate_header(data: &[u8], min_len: usize) -> Result<(u8, u16, u8, usize), ParseError> {
+    if data.len() < min_len {
+        return Err(ParseError::TooShort);
+    }
+
+    // Check header: FF FF FD 00
+    if data[0] != 0xFF || data[1] != 0xFF || data[2] != 0xFD || data[3] != 0x00 {
+        return Err(ParseError::InvalidHeader);
+    }
+
+    let id = data[4];
+    let length = u16::from_le_bytes([data[5], data[6]]);
+
+    if data[7] != instruction::STATUS {
+        return Err(ParseError::InvalidInstruction);
+    }
+
+    let error = data[8];
+
+    Ok((id, length, error, 9))
+}
+
+/// Parse status packet for position read (4 bytes).
+///
+/// Returns `(motor_id, raw_position)`.
+pub fn parse_status_packet(data: &[u8], offset: usize) -> Result<(u8, i32), JsValue> {
+    let slice = &data[offset..];
+
+    // Position response: header(4) + id(1) + len(2) + instr(1) + err(1) + data(4) + crc(2) = 15
+    let (id, length, _error, data_start) = validate_header(slice, 15)?;
+
+    if length != 8 {
+        return Err(ParseError::InvalidLength.into());
+    }
+
+    let pos = i32::from_le_bytes([
+        slice[data_start],
+        slice[data_start + 1],
+        slice[data_start + 2],
+        slice[data_start + 3],
+    ]);
+
+    Ok((id, pos))
+}
+
+/// Parse status packet for 1-byte read (e.g., temperature).
+pub fn parse_status_packet_1byte(data: &[u8]) -> Result<u8, JsValue> {
+    // 1-byte response: header(4) + id(1) + len(2) + instr(1) + err(1) + data(1) + crc(2) = 12
+    let (_id, _length, error, data_start) = validate_header(data, 12)?;
+
+    if error != 0 {
+        return Err(ParseError::MotorError(error).into());
+    }
+
+    Ok(data[data_start])
+}
+
+/// Parse status packet for 2-byte signed read (e.g., load).
+pub fn parse_status_packet_2byte_signed(data: &[u8]) -> Result<i16, JsValue> {
+    // 2-byte response: header(4) + id(1) + len(2) + instr(1) + err(1) + data(2) + crc(2) = 13
+    let (_id, _length, error, data_start) = validate_header(data, 13)?;
+
+    if error != 0 {
+        return Err(ParseError::MotorError(error).into());
+    }
+
+    Ok(i16::from_le_bytes([data[data_start], data[data_start + 1]]))
+}
+
+// ============================================================================
+// Conversion Utilities
+// ============================================================================
+
+/// Ticks per radian for XL330 (4096 positions per revolution)
+const TICKS_PER_RAD: f32 = 4096.0 / (2.0 * std::f32::consts::PI);
+
+/// Radians per tick for XL330
+const RAD_PER_TICK: f32 = (2.0 * std::f32::consts::PI) / 4096.0;
+
+/// Convert radians to raw Dynamixel position.
+///
+/// XL330: 4096 positions/revolution, center = 2048 = 0 rad
+#[inline]
+pub fn radians_to_raw(rad: f32) -> i32 {
+    (2048.0 + rad * TICKS_PER_RAD) as i32
+}
+
+/// Convert raw Dynamixel position to radians.
+#[inline]
+pub fn raw_to_radians(raw: i32) -> f32 {
+    (raw as f32 - 2048.0) * RAD_PER_TICK
+}
+
+// ============================================================================
+// Resilient Multi-Packet Parsing
+// ============================================================================
+
+/// Scan buffer for Dynamixel packet headers (FF FF FD 00).
+///
+/// Returns iterator of byte offsets where valid headers were found.
+fn find_packet_headers(data: &[u8]) -> impl Iterator<Item = usize> + '_ {
+    data.windows(4)
+        .enumerate()
+        .filter(|(_, w)| w == &[0xFF, 0xFF, 0xFD, 0x00])
+        .map(|(i, _)| i)
+}
+
+/// Parse all position status packets from a response buffer.
+///
+/// This function scans for packet headers instead of using fixed offsets,
+/// making it resilient to missing motor responses.
+///
+/// # Returns
+/// Vector of (motor_id, raw_position) for each successfully parsed packet.
+pub fn parse_position_packets(data: &[u8]) -> Vec<(u8, i32)> {
+    let mut results = Vec::new();
+
+    for offset in find_packet_headers(data) {
+        // Need at least 15 bytes for a position status packet
+        if offset + 15 > data.len() {
+            continue;
+        }
+
+        let slice = &data[offset..];
+
+        // Check it's a status packet (instruction = 0x55)
+        if slice[7] != instruction::STATUS {
+            continue;
+        }
+
+        // Check length field indicates position data (length = 8)
+        let length = u16::from_le_bytes([slice[5], slice[6]]);
+        if length != 8 {
+            continue;
+        }
+
+        let motor_id = slice[4];
+        let pos = i32::from_le_bytes([slice[9], slice[10], slice[11], slice[12]]);
+
+        results.push((motor_id, pos));
+    }
+
+    results
+}
+
+/// Parse all 1-byte status packets (e.g., temperature) from a response buffer.
+///
+/// # Returns
+/// Vector of (motor_id, value) for each successfully parsed packet.
+pub fn parse_1byte_packets(data: &[u8]) -> Vec<(u8, u8)> {
+    let mut results = Vec::new();
+
+    for offset in find_packet_headers(data) {
+        // Need at least 12 bytes for a 1-byte status packet
+        if offset + 12 > data.len() {
+            continue;
+        }
+
+        let slice = &data[offset..];
+
+        if slice[7] != instruction::STATUS {
+            continue;
+        }
+
+        // Length = 5 for 1-byte data (instr + err + data + crc)
+        let length = u16::from_le_bytes([slice[5], slice[6]]);
+        if length != 5 {
+            continue;
+        }
+
+        let error = slice[8];
+        if error != 0 {
+            continue;
+        }
+
+        let motor_id = slice[4];
+        let value = slice[9];
+
+        results.push((motor_id, value));
+    }
+
+    results
+}
+
+/// Parse all 2-byte signed status packets (e.g., load) from a response buffer.
+///
+/// # Returns
+/// Vector of (motor_id, value) for each successfully parsed packet.
+pub fn parse_2byte_signed_packets(data: &[u8]) -> Vec<(u8, i16)> {
+    let mut results = Vec::new();
+
+    for offset in find_packet_headers(data) {
+        // Need at least 13 bytes for a 2-byte status packet
+        if offset + 13 > data.len() {
+            continue;
+        }
+
+        let slice = &data[offset..];
+
+        if slice[7] != instruction::STATUS {
+            continue;
+        }
+
+        // Length = 6 for 2-byte data (instr + err + data + crc)
+        let length = u16::from_le_bytes([slice[5], slice[6]]);
+        if length != 6 {
+            continue;
+        }
+
+        let error = slice[8];
+        if error != 0 {
+            continue;
+        }
+
+        let motor_id = slice[4];
+        let value = i16::from_le_bytes([slice[9], slice[10]]);
+
+        results.push((motor_id, value));
+    }
+
+    results
+}
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_crc() {
+        // Test vector from Dynamixel documentation
+        let data = [
+            0xFF, 0xFF, 0xFD, 0x00, 0x01, 0x07, 0x00, 0x55, 0x00, 0x06, 0x04, 0x26,
+        ];
+        let crc = crc16(&data);
+        assert_eq!(crc, 0x5D65);
+    }
+
+    #[test]
+    fn test_radians_conversion() {
+        assert_eq!(radians_to_raw(0.0), 2048);
+        assert!((raw_to_radians(2048) - 0.0).abs() < 0.001);
+
+        let rad = std::f32::consts::PI / 2.0;
+        let raw = radians_to_raw(rad);
+        let back = raw_to_radians(raw);
+        assert!((back - rad).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_read_packet_structure() {
+        let packet = build_read_packet(11, 146, 1);
+        assert_eq!(packet[0..4], [0xFF, 0xFF, 0xFD, 0x00]); // Header
+        assert_eq!(packet[4], 11); // Motor ID
+        assert_eq!(packet[7], instruction::READ);
+        assert_eq!(packet[8], 146); // Address low
+        assert_eq!(packet[9], 0); // Address high
+    }
+
+    #[test]
+    fn test_reboot_packet_structure() {
+        let packet = build_reboot_packet(17);
+        assert_eq!(packet[4], 17); // Motor ID
+        assert_eq!(packet[7], instruction::REBOOT);
+        assert_eq!(packet.len(), 10);
+    }
 }

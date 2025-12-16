@@ -430,10 +430,9 @@
 
         // Action handlers
         btnReadPosition.onclick = async () => {
-            setMode('reading');
             poseMessageId = addMessage('pose', 'Head Pose', '<strong>Position:</strong> --<br><strong>Rotation:</strong> --');
-            addMessage('info', 'Reading Position', 'Continuously reading head position...');
-            await read_pose();
+            let pose = await read_pose();
+            updatePose(pose[0], pose[1], pose[2], pose[3], pose[4], pose[5]);
         };
 
         btnRecord.onclick = async () => {

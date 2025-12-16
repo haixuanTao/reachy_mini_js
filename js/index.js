@@ -1,5 +1,8 @@
-import { fk, connect, torque_off, torque_on, record, replay, stop, forward_kinematics, inverse_kinematics } from "../pkg/index.js";
+import init, { get_head_pose, connect, torque_off, torque_on, start_fk_stream, replay, stop, forward_kinematics, inverse_kinematics } from "../pkg/index.js";
 import { SerialPort as PolyfillSerialPort } from 'web-serial-polyfill';
+
+// Initialize WASM (serial helpers auto-exposed to window!)
+await init();
 
 import("../pkg/index.js").catch(console.error);
 
@@ -7,9 +10,9 @@ import("../pkg/index.js").catch(console.error);
 window.connect = connect;
 window.enableTorque = torque_on;
 window.disableTorque = torque_off;
-window.read_pose = fk;
+window.read_pose = get_head_pose;
 window.replay = replay;
-window.record = record;
+window.record = start_fk_stream;
 window.stop = stop;
 window.forward_kinematics = forward_kinematics;
 window.inverse_kinematics = inverse_kinematics;
