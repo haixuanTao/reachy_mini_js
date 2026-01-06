@@ -1,0 +1,264 @@
+:root {
+    --white: #ffffff;
+    --gray-50: #f9fafb;
+    --gray-100: #f3f4f6;
+    --gray-200: #e5e7eb;
+    --gray-300: #d1d5db;
+    --gray-400: #9ca3af;
+    --gray-500: #6b7280;
+    --gray-600: #4b5563;
+    --gray-700: #374151;
+    --gray-800: #1f2937;
+    --green-500: #22c55e;
+    --red-500: #ef4444;
+    --blue-500: #3b82f6;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+    font-family: 'Source Sans 3', -apple-system, BlinkMacSystemFont, sans-serif;
+    background: var(--white);
+    color: var(--gray-800);
+    min-height: 100vh;
+    line-height: 1.5;
+}
+
+/* Header */
+.header {
+    background: var(--white);
+    border-bottom: 1px solid var(--gray-200);
+    padding: 12px 16px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    position: sticky;
+    top: 0;
+    z-index: 100;
+}
+
+.header-controls {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    flex-wrap: wrap;
+    justify-content: center;
+}
+
+.toggle-control {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.toggle-label {
+    font-size: 14px;
+    font-weight: 500;
+    color: var(--gray-600);
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.toggle-status {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--gray-300);
+    transition: background 0.2s;
+}
+
+.toggle-status.active { background: var(--green-500); }
+
+.toggle-switch {
+    position: relative;
+    width: 44px;
+    height: 24px;
+}
+
+.toggle-switch input { opacity: 0; width: 0; height: 0; }
+
+.toggle-slider {
+    position: absolute;
+    cursor: pointer;
+    inset: 0;
+    background: var(--gray-200);
+    border-radius: 12px;
+    transition: all 0.2s;
+}
+
+.toggle-slider::before {
+    content: '';
+    position: absolute;
+    height: 18px;
+    width: 18px;
+    left: 3px;
+    bottom: 3px;
+    background: var(--white);
+    border-radius: 50%;
+    transition: all 0.2s;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+}
+
+.toggle-switch input:checked + .toggle-slider { background: var(--gray-800); }
+.toggle-switch input:checked + .toggle-slider::before { transform: translateX(20px); }
+.toggle-switch input:disabled + .toggle-slider { opacity: 0.4; cursor: not-allowed; }
+
+.toggle-control.highlight {
+    background: linear-gradient(135deg, #fef3c7 0%, #fde68a 100%);
+    padding: 6px 12px;
+    border-radius: 8px;
+    margin: -6px 0;
+}
+
+.toggle-control.highlight .toggle-label {
+    color: var(--gray-700);
+    font-weight: 600;
+}
+
+.toggle-divider {
+    width: 1px;
+    height: 24px;
+    background: var(--gray-200);
+}
+
+@media (max-width: 768px) {
+    .header { padding: 12px; }
+    .header-controls { gap: 12px; }
+    .toggle-label { font-size: 13px; }
+    .toggle-switch { width: 40px; height: 22px; }
+    .toggle-slider::before { height: 16px; width: 16px; }
+    .toggle-switch input:checked + .toggle-slider::before { transform: translateX(18px); }
+    .toggle-divider { display: none; }
+}
+
+/* Main */
+.main {
+    max-width: 720px;
+    margin: 0 auto;
+    padding: 32px 24px 120px 24px;
+}
+
+/* Messages */
+.messages-container {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    margin-bottom: 24px;
+}
+
+.message {
+    display: flex;
+    gap: 12px;
+    animation: messageIn 0.3s ease-out;
+    scroll-margin-top: 80px;
+}
+
+@keyframes messageIn {
+    from { opacity: 0; transform: translateY(8px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+
+.message-avatar {
+    width: 32px;
+    height: 32px;
+    border-radius: 8px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    font-size: 14px;
+    background: var(--gray-100);
+}
+
+.message-avatar.error { background: #fef2f2; }
+.message-avatar.success, .message-avatar.pose { background: #f0fdf4; }
+.message-avatar.info { background: #eff6ff; }
+
+.message-content {
+    flex: 1;
+    padding: 12px 16px;
+    background: var(--gray-50);
+    border: 1px solid var(--gray-100);
+    border-radius: 12px;
+    border-top-left-radius: 4px;
+}
+
+.message.error .message-content { background: #fef2f2; border-color: #fecaca; }
+.message.success .message-content, .message.pose .message-content { background: #f0fdf4; border-color: #bbf7d0; }
+.message.info .message-content { background: #eff6ff; border-color: #bfdbfe; }
+
+.message-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 4px;
+}
+
+.message-title {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--gray-700);
+}
+
+.message.error .message-title { color: var(--red-500); }
+.message.success .message-title, .message.pose .message-title { color: var(--green-500); }
+.message.info .message-title { color: var(--blue-500); }
+
+.message-time { font-size: 11px; color: var(--gray-400); }
+.message-text { font-size: 14px; color: var(--gray-600); line-height: 1.5; }
+
+.message-dismiss {
+    background: none;
+    border: none;
+    color: var(--gray-400);
+    cursor: pointer;
+    padding: 2px;
+    margin-left: 8px;
+    opacity: 0;
+    transition: opacity 0.2s;
+}
+
+.message:hover .message-dismiss { opacity: 1; }
+.message-dismiss:hover { color: var(--gray-600); }
+
+/* Action Bar */
+.action-bar { margin-top: 24px; margin-bottom: 100px; }
+
+.action-buttons {
+    display: flex;
+    gap: 12px;
+    justify-content: center;
+    flex-wrap: wrap;
+}
+
+.action-buttons.hidden { display: none; }
+
+.action-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    padding: 12px 20px;
+    background: var(--gray-50);
+    border: 1px solid var(--gray-200);
+    border-radius: 10px;
+    font-family: inherit;
+    font-size: 14px;
+    font-weight: 500;
+    color: var(--gray-700);
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.action-btn:hover:not(:disabled) { background: var(--gray-100); border-color: var(--gray-300); }
+.action-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+.action-btn-stop {
+    background: #fef2f2;
+    border-color: #fecaca;
+    color: var(--red-500);
+    min-width: 120px;
+}
+
+.action-btn-stop:hover { background: #fee2e2; border-color: #fca5a5; }
