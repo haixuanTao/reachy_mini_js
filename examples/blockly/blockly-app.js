@@ -1,3 +1,5 @@
+// Wait for WASM module to be ready before initializing
+function initBlocklyApp() {
     // ========== Global State ==========
     var stopRequested = false;
     var programTimer = 0;
@@ -5,16 +7,16 @@
     var motorPositionCache = {};
 
     // ========== Kinematics Functions ==========
-    // These call the WASM functions attached to window
-    // joints -> coordinates: window.forward_kinematics(joints) -> [x, y, z, roll, pitch, yaw]
-    // coordinates -> joints: window.inverse_kinematics(coordinates) -> [j1, j2, ..., j8]
+    // These call the WASM functions attached to window.wasm
+    // joints -> coordinates: window.wasm.forward_kinematics(joints) -> [x, y, z, roll, pitch, yaw]
+    // coordinates -> joints: window.wasm.inverse_kinematics(coordinates) -> [j1, j2, ..., j8]
 
     function callFK(joints) {
-      return window.forward_kinematics(joints);
+      return window.wasm.forward_kinematics(joints);
     }
 
     function callIK(coordinates) {
-      return window.inverse_kinematics(coordinates);
+      return window.wasm.inverse_kinematics(coordinates);
     }
 
     // ========== Console Logging ==========
@@ -75,128 +77,44 @@
       document.getElementById(tab + 'Tab').classList.add('active');
     }
 
-    // ========== Robot Communication ==========
+    // ========== Robot Communication (WASM-backed) ==========
+    // This Robot object wraps the Rust WASM module for motor control
     var Robot = {
-      port: null,
-      reader: null,
-      writer: null,
       connected: false,
-      readBuffer: [],
-      motorIds: [11, 12, 13, 14, 15, 16],  // Head motors only (antennas are controlled separately)
+      motorIds: [11, 12, 13, 14, 15, 16],  // Head motors only (antennas 17-18 controlled separately)
+      pollingInterval: null,
 
-      CRC_TABLE: [
-        0x0000, 0x8005, 0x800F, 0x000A, 0x801B, 0x001E, 0x0014, 0x8011,
-        0x8033, 0x0036, 0x003C, 0x8039, 0x0028, 0x802D, 0x8027, 0x0022,
-        0x8063, 0x0066, 0x006C, 0x8069, 0x0078, 0x807D, 0x8077, 0x0072,
-        0x0050, 0x8055, 0x805F, 0x005A, 0x804B, 0x004E, 0x0044, 0x8041,
-        0x80C3, 0x00C6, 0x00CC, 0x80C9, 0x00D8, 0x80DD, 0x80D7, 0x00D2,
-        0x00F0, 0x80F5, 0x80FF, 0x00FA, 0x80EB, 0x00EE, 0x00E4, 0x80E1,
-        0x00A0, 0x80A5, 0x80AF, 0x00AA, 0x80BB, 0x00BE, 0x00B4, 0x80B1,
-        0x8093, 0x0096, 0x009C, 0x8099, 0x0088, 0x808D, 0x8087, 0x0082,
-        0x8183, 0x0186, 0x018C, 0x8189, 0x0198, 0x819D, 0x8197, 0x0192,
-        0x01B0, 0x81B5, 0x81BF, 0x01BA, 0x81AB, 0x01AE, 0x01A4, 0x81A1,
-        0x01E0, 0x81E5, 0x81EF, 0x01EA, 0x81FB, 0x01FE, 0x01F4, 0x81F1,
-        0x81D3, 0x01D6, 0x01DC, 0x81D9, 0x01C8, 0x81CD, 0x81C7, 0x01C2,
-        0x0140, 0x8145, 0x814F, 0x014A, 0x815B, 0x015E, 0x0154, 0x8151,
-        0x8173, 0x0176, 0x017C, 0x8179, 0x0168, 0x816D, 0x8167, 0x0162,
-        0x8123, 0x0126, 0x012C, 0x8129, 0x0138, 0x813D, 0x8137, 0x0132,
-        0x0110, 0x8115, 0x811F, 0x011A, 0x810B, 0x010E, 0x0104, 0x8101,
-        0x8303, 0x0306, 0x030C, 0x8309, 0x0318, 0x831D, 0x8317, 0x0312,
-        0x0330, 0x8335, 0x833F, 0x033A, 0x832B, 0x032E, 0x0324, 0x8321,
-        0x0360, 0x8365, 0x836F, 0x036A, 0x837B, 0x037E, 0x0374, 0x8371,
-        0x8353, 0x0356, 0x035C, 0x8359, 0x0348, 0x834D, 0x8347, 0x0342,
-        0x03C0, 0x83C5, 0x83CF, 0x03CA, 0x83DB, 0x03DE, 0x03D4, 0x83D1,
-        0x83F3, 0x03F6, 0x03FC, 0x83F9, 0x03E8, 0x83ED, 0x83E7, 0x03E2,
-        0x83A3, 0x03A6, 0x03AC, 0x83A9, 0x03B8, 0x83BD, 0x83B7, 0x03B2,
-        0x0390, 0x8395, 0x839F, 0x039A, 0x838B, 0x038E, 0x0384, 0x8381,
-        0x0280, 0x8285, 0x828F, 0x028A, 0x829B, 0x029E, 0x0294, 0x8291,
-        0x82B3, 0x02B6, 0x02BC, 0x82B9, 0x02A8, 0x82AD, 0x82A7, 0x02A2,
-        0x82E3, 0x02E6, 0x02EC, 0x82E9, 0x02F8, 0x82FD, 0x82F7, 0x02F2,
-        0x02D0, 0x82D5, 0x82DF, 0x02DA, 0x82CB, 0x02CE, 0x02C4, 0x82C1,
-        0x8243, 0x0246, 0x024C, 0x8249, 0x0258, 0x825D, 0x8257, 0x0252,
-        0x0270, 0x8275, 0x827F, 0x027A, 0x826B, 0x026E, 0x0264, 0x8261,
-        0x0220, 0x8225, 0x822F, 0x022A, 0x823B, 0x023E, 0x0234, 0x8231,
-        0x8213, 0x0216, 0x021C, 0x8219, 0x0208, 0x820D, 0x8207, 0x0202
-      ],
-
-      calculateCRC: function(data) {
-        var crc = 0;
-        for (var j = 0; j < data.length; j++) {
-          var i = ((crc >> 8) ^ data[j]) & 0xFF;
-          crc = ((crc << 8) ^ this.CRC_TABLE[i]) & 0xFFFF;
-        }
-        return crc;
+      // Position conversion utilities
+      degreesToPosition: function(deg) {
+        return Math.round(2048 + (deg * 4096 / 360));
       },
 
-      buildPacket: function(id, instruction, params) {
-        params = params || [];
-        var length = 1 + params.length + 2;
-        var packet = [0xFF, 0xFF, 0xFD, 0x00, id, length & 0xFF, (length >> 8) & 0xFF, instruction];
-        for (var i = 0; i < params.length; i++) packet.push(params[i]);
-        var crc = this.calculateCRC(packet);
-        packet.push(crc & 0xFF, (crc >> 8) & 0xFF);
-        return new Uint8Array(packet);
+      positionToDegrees: function(pos) {
+        return (pos - 2048) * 360 / 4096;
       },
 
-      buildWritePacket: function(id, address, data) {
-        var params = [address & 0xFF, (address >> 8) & 0xFF];
-        for (var i = 0; i < data.length; i++) params.push(data[i]);
-        return this.buildPacket(id, 0x03, params);
-      },
-
-      buildReadPacket: function(id, address, dataLength) {
-        var params = [address & 0xFF, (address >> 8) & 0xFF, dataLength & 0xFF, (dataLength >> 8) & 0xFF];
-        return this.buildPacket(id, 0x02, params);
-      },
-
-      buildSyncWritePacket: function(address, dataLength, motorData) {
-        var n = motorData.length;
-        var length = 1 + 2 + 2 + n * (1 + dataLength) + 2;
-        var packet = [0xFF, 0xFF, 0xFD, 0x00, 0xFE, length & 0xFF, (length >> 8) & 0xFF, 0x83,
-                      address & 0xFF, (address >> 8) & 0xFF, dataLength & 0xFF, (dataLength >> 8) & 0xFF];
-        for (var i = 0; i < motorData.length; i++) {
-          packet.push(motorData[i].id);
-          for (var j = 0; j < motorData[i].data.length; j++) {
-            packet.push(motorData[i].data[j]);
-          }
-        }
-        var crc = this.calculateCRC(packet);
-        packet.push(crc & 0xFF, (crc >> 8) & 0xFF);
-        return new Uint8Array(packet);
-      },
-
-      buildSyncReadPacket: function(address, dataLength, motorIds) {
-        var n = motorIds.length;
-        var length = 1 + 2 + 2 + n + 2;
-        var packet = [0xFF, 0xFF, 0xFD, 0x00, 0xFE, length & 0xFF, (length >> 8) & 0xFF, 0x82,
-                      address & 0xFF, (address >> 8) & 0xFF, dataLength & 0xFF, (dataLength >> 8) & 0xFF];
-        for (var i = 0; i < motorIds.length; i++) {
-          packet.push(motorIds[i]);
-        }
-        var crc = this.calculateCRC(packet);
-        packet.push(crc & 0xFF, (crc >> 8) & 0xFF);
-        return new Uint8Array(packet);
-      },
-
-      connect: function() {
+      // Connection management (uses WASM)
+      connect: function(address) {
         var self = this;
-        return navigator.serial.requestPort().then(function(p) {
-          self.port = p;
-          return self.port.open({ baudRate: 1000000 });
-        }).then(function() {
-          self.writer = self.port.writable.getWriter();
-          self.reader = self.port.readable.getReader();
+        // Get address from parameter, input field, or use default
+        if (!address) {
+          var urlInput = document.getElementById('robotUrl');
+          address = urlInput ? urlInput.value.trim() : null;
+        }
+        // Use null for empty string to trigger WASM default behavior
+        if (!address) address = null;
+
+        logConsole('Connecting to ' + (address || 'default') + '...', 'info');
+        return window.wasm.connect(address).then(function(result) {
           self.connected = true;
-          self.readBuffer = [];
-          self.startBackgroundReader();
           updateConnectionStatus(true);
-          logConsole('Connected to robot', 'success');
+          logConsole('Connected to robot at ' + (address || 'default'), 'success');
           self.startPositionPolling();
           // Auto-check motors after connection
           setTimeout(function() { checkMotors(); }, 500);
           return true;
         }).catch(function(e) {
-          logConsole('Connection failed: ' + e.message, 'error');
+          logConsole('Connection failed: ' + (e.message || e), 'error');
           return false;
         });
       },
@@ -205,43 +123,14 @@
         var self = this;
         self.connected = false;
         self.stopPositionPolling();
-        return Promise.resolve().then(function() {
-          if (self.reader) return self.reader.cancel();
-        }).then(function() {
-          if (self.reader) self.reader.releaseLock();
-          if (self.writer) self.writer.releaseLock();
-          if (self.port) return self.port.close();
-        }).then(function() {
-          self.port = null;
-          self.reader = null;
-          self.writer = null;
-          self.readBuffer = [];
+        return window.wasm.disconnect().then(function() {
           updateConnectionStatus(false);
           logConsole('Disconnected', 'log');
-        }).catch(function() {});
+        }).catch(function() {
+          updateConnectionStatus(false);
+        });
       },
 
-      startBackgroundReader: function() {
-        var self = this;
-        function readLoop() {
-          if (!self.connected || !self.reader) return;
-          self.reader.read().then(function(result) {
-            if (result.done) return;
-            if (result.value) {
-              for (var i = 0; i < result.value.length; i++) {
-                self.readBuffer.push(result.value[i]);
-              }
-              if (self.readBuffer.length > 2048) {
-                self.readBuffer = self.readBuffer.slice(-1024);
-              }
-            }
-            readLoop();
-          }).catch(function() {});
-        }
-        readLoop();
-      },
-
-      pollingInterval: null,
       startPositionPolling: function() {
         var self = this;
         this.pollingInterval = setInterval(function() {
@@ -266,354 +155,194 @@
         }
       },
 
-      waitForPacket: function(motorId, timeout) {
-        var self = this;
-        timeout = timeout || 200;
-        var start = Date.now();
-        return new Promise(function(resolve) {
-          function check() {
-            if (Date.now() - start > timeout) { resolve(null); return; }
-            for (var i = 0; i < self.readBuffer.length - 10; i++) {
-              if (self.readBuffer[i] === 0xFF && self.readBuffer[i+1] === 0xFF &&
-                  self.readBuffer[i+2] === 0xFD && self.readBuffer[i+3] === 0x00) {
-                var packetId = self.readBuffer[i+4];
-                var len = self.readBuffer[i+5] | (self.readBuffer[i+6] << 8);
-                var totalLen = 7 + len;
-                if (i + totalLen <= self.readBuffer.length) {
-                  if (self.readBuffer[i+7] === 0x55 && packetId === motorId) {
-                    var pkt = self.readBuffer.slice(i, i + totalLen);
-                    self.readBuffer = self.readBuffer.slice(i + totalLen);
-                    resolve(pkt);
-                    return;
-                  }
-                  self.readBuffer = self.readBuffer.slice(i + totalLen);
-                  i = -1;
-                }
-              }
-            }
-            setTimeout(check, 5);
-          }
-          check();
-        });
-      },
-
-      waitForSyncReadPackets: function(motorIds, timeout) {
-        var self = this;
-        timeout = timeout || 500;
-        var start = Date.now();
-        var packets = {};
-
-        return new Promise(function(resolve) {
-          function check() {
-            if (Date.now() - start > timeout) { resolve(packets); return; }
-
-            for (var i = 0; i < self.readBuffer.length - 10; i++) {
-              if (self.readBuffer[i] === 0xFF && self.readBuffer[i+1] === 0xFF &&
-                  self.readBuffer[i+2] === 0xFD && self.readBuffer[i+3] === 0x00) {
-                var packetId = self.readBuffer[i+4];
-                var len = self.readBuffer[i+5] | (self.readBuffer[i+6] << 8);
-                var totalLen = 7 + len;
-
-                if (i + totalLen <= self.readBuffer.length) {
-                  if (self.readBuffer[i+7] === 0x55 && motorIds.indexOf(packetId) !== -1) {
-                    packets[packetId] = self.readBuffer.slice(i, i + totalLen);
-                  }
-                  self.readBuffer = self.readBuffer.slice(i + totalLen);
-                  i = -1;
-
-                  // Check if we got all packets
-                  if (Object.keys(packets).length === motorIds.length) {
-                    resolve(packets);
-                    return;
-                  }
-                }
-              }
-            }
-            setTimeout(check, 5);
-          }
-          check();
-        });
-      },
-
-      sendPacket: function(packet, expectResponse, motorId) {
-        var self = this;
-        if (!self.connected || !self.writer) return Promise.resolve(null);
-        self.readBuffer = [];
-        return self.writer.write(packet).then(function() {
-          if (!expectResponse) return new Promise(function(r) { setTimeout(function() { r(null); }, 5); });
-          return self.waitForPacket(motorId);
-        });
-      },
-
-      // High-level API
-      
-      // Dynamixel error codes
-      errorCodes: {
-        0x01: 'Result Fail',
-        0x02: 'Instruction Error',
-        0x04: 'CRC Error',
-        0x08: 'Data Range Error',
-        0x10: 'Data Length Error',
-        0x20: 'Data Limit Error',
-        0x40: 'Access Error',
-        0x80: 'Hardware Alert'  // Voltage, Overheating, etc.
-      },
-      
-      parseError: function(errorByte) {
-        if (errorByte === 0) return null;
-        var errors = [];
-        for (var code in this.errorCodes) {
-          if (errorByte & parseInt(code)) {
-            errors.push(this.errorCodes[code]);
-          }
-        }
-        return errors.join(', ');
-      },
-
-      // Build REBOOT packet (instruction 0x08)
-      buildRebootPacket: function(id) {
-        return this.buildPacket(id, 0x08, []);
-      },
-
-      // Build PING packet (instruction 0x01)
-      buildPingPacket: function(id) {
-        return this.buildPacket(id, 0x01, []);
-      },
-
-      // Ping a motor to check if it responds
+      // Motor status check - uses WASM temperature read as a ping
       pingMotor: function(id) {
-        var self = this;
-        var packet = this.buildPingPacket(id);
-        return this.sendPacket(packet, true, id).then(function(response) {
-          if (response && response.length >= 11) {
-            var error = response[8];
-            if (error !== 0) {
-              var errorMsg = self.parseError(error);
-              return { ok: false, error: errorMsg, hasHardwareAlert: !!(error & 0x80) };
-            }
-            return { ok: true, error: null };
-          }
-          return { ok: false, error: 'No response', hasHardwareAlert: false };
+        return window.wasm.get_motor_temperature(id).then(function(temp) {
+          return { ok: true, error: null };
+        }).catch(function(e) {
+          return { ok: false, error: e.message || String(e), hasHardwareAlert: false };
         });
       },
 
-      // Check all motors and report status
+      // Check all motors - use bulk position read which is more reliable
       checkAllMotors: function() {
-        var self = this;
         var results = {};
-        var allMotors = [11,12,13,14,15,16,17,18];
-        var checkNext = function(index) {
-          if (index >= allMotors.length) {
-            return Promise.resolve(results);
-          }
-          var id = allMotors[index];
-          return self.pingMotor(id).then(function(result) {
-            results[id] = result;
-            return checkNext(index + 1);
-          });
-        };
-        return checkNext(0);
-      },
+        var allMotors = [11, 12, 13, 14, 15, 16, 17, 18];
 
-      // Reboot a motor (clears hardware error status)
-      rebootMotor: function(id) {
-        var self = this;
-        var packet = this.buildRebootPacket(id);
-        logConsole('Rebooting motor ' + id + '...', 'warn');
-        return this.sendPacket(packet, false).then(function() {
-          // Wait for motor to reboot
-          return new Promise(function(r) { setTimeout(r, 500); });
-        }).then(function() {
-          return self.pingMotor(id);
-        }).then(function(result) {
-          if (result.ok) {
-            logConsole('Motor ' + id + ' rebooted successfully', 'success');
-          } else {
-            logConsole('Motor ' + id + ' still has error after reboot: ' + result.error, 'error');
+        // Use get_all_joints which does a bulk sync read - more reliable over WebSocket
+        return window.wasm.get_all_joints().then(function(joints) {
+          // If we got 8 joint values, all motors responded
+          for (var i = 0; i < allMotors.length; i++) {
+            var id = allMotors[i];
+            var angle = joints[i];
+            // If angle is exactly 0 and not a valid position, might indicate no response
+            // But typically any response means motor is OK
+            results[id] = { ok: true, angle: angle, error: null };
           }
-          return result;
+          return results;
+        }).catch(function(e) {
+          // Bulk read failed - try to determine which motors are responding
+          var errorMsg = e.message || String(e);
+          for (var i = 0; i < allMotors.length; i++) {
+            results[allMotors[i]] = { ok: false, error: errorMsg, hasHardwareAlert: errorMsg.includes('Motor error') };
+          }
+          return results;
         });
       },
 
-      // Reboot all motors
-      rebootAllMotors: function() {
-        var self = this;
-        var allMotors = [11,12,13,14,15,16,17,18];
-        var rebootNext = function(index) {
-          if (index >= allMotors.length) {
-            return Promise.resolve();
-          }
-          return self.rebootMotor(allMotors[index]).then(function() {
-            return rebootNext(index + 1);
-          });
-        };
-        return rebootNext(0);
+      // Reboot a motor (uses WASM)
+      rebootMotor: function(id) {
+        logConsole('Rebooting motor ' + id + '...', 'warn');
+        return window.wasm.reboot_motor(id).then(function() {
+          logConsole('Motor ' + id + ' rebooted successfully', 'success');
+          return { ok: true };
+        }).catch(function(e) {
+          logConsole('Motor ' + id + ' reboot failed: ' + (e.message || e), 'error');
+          return { ok: false, error: e.message || String(e) };
+        });
       },
 
+      // Reboot all motors (uses WASM)
+      rebootAllMotors: function() {
+        logConsole('Rebooting all motors...', 'warn');
+        return window.wasm.reboot_all_motors().then(function() {
+          logConsole('All motors rebooted', 'success');
+        });
+      },
+
+      // Torque control (uses WASM)
       setTorque: function(id, enable) {
         var self = this;
-        var packet = this.buildWritePacket(id, 64, [enable ? 1 : 0]);
-        return this.sendPacket(packet, true, id).then(function(response) {
-          if (response && response.length >= 11) {
-            var error = response[8];
-            if (error !== 0) {
-              var errorMsg = self.parseError(error);
-              logConsole('Motor ' + id + ' torque error: ' + errorMsg, 'error');
-              if (error & 0x80) {
-                logConsole('Motor ' + id + ' has hardware alert - try rebooting', 'warn');
-              }
-              return false;
-            }
-            // If enabling torque, set current position as goal position to prevent fast jumps
-            if (enable) {
-              return self.getPosition(id).then(function(currentPos) {
-                return self.setPosition(id, currentPos).then(function() {
-                  return true;
-                });
-              }).catch(function(err) {
-                console.warn('Failed to set initial goal position for motor ' + id + ':', err);
-                return true; // Still return true since torque was enabled
-              });
-            }
-            return true;
-          } else {
-            logConsole('Motor ' + id + ' not responding', 'error');
-            return false;
-          }
+        // Determine which torque function to use based on motor ID
+        var torquePromise;
+        if (id === 17) {
+          torquePromise = enable ? window.wasm.enable_left_antenna_torque() : window.wasm.disable_left_antenna_torque();
+        } else if (id === 18) {
+          torquePromise = enable ? window.wasm.enable_right_antenna_torque() : window.wasm.disable_right_antenna_torque();
+        } else if (id >= 11 && id <= 16) {
+          // For individual head motors, we use head torque (affects all 6)
+          // This is a limitation - WASM doesn't have per-motor head torque
+          torquePromise = enable ? window.wasm.enable_head_torque() : window.wasm.disable_head_torque();
+        } else {
+          return Promise.resolve(false);
+        }
+
+        return torquePromise.then(function() {
+          return true;
+        }).catch(function(e) {
+          logConsole('Motor ' + id + ' torque error: ' + (e.message || e), 'error');
+          return false;
         });
       },
 
       setTorqueMultiple: function(ids, enable) {
-        var self = this;
-
-        // Build sync write packet for torque enable/disable
-        var motorData = [];
-        for (var i = 0; i < ids.length; i++) {
-          motorData.push({
-            id: ids[i],
-            data: [enable ? 1 : 0]
-          });
-        }
-        var torquePacket = this.buildSyncWritePacket(64, 1, motorData);
-
-        // Send the sync write torque command
-        return this.sendPacket(torquePacket, false).then(function() {
-          // If enabling torque, set current positions as goal positions
-          if (enable) {
-            // Sync read current positions from all motors
-            var readPacket = self.buildSyncReadPacket(132, 4, ids);
-            self.readBuffer = [];
-
-            return self.writer.write(readPacket).then(function() {
-              return self.waitForSyncReadPackets(ids);
-            }).then(function(packets) {
-              // Extract positions and build sync write for goal positions
-              var positionData = [];
-              for (var i = 0; i < ids.length; i++) {
-                var id = ids[i];
-                var response = packets[id];
-                var pos = 2048; // default to center
-
-                if (response && response.length >= 15) {
-                  pos = response[9] | (response[10] << 8) | (response[11] << 16) | (response[12] << 24);
-                  if (pos > 0x7FFFFFFF) pos -= 0x100000000;
-                }
-
-                // CRITICAL: Update the motor position cache with actual current positions
-                // This ensures subsequent speed-limited movements start from the correct position
-                motorPositionCache[id] = pos;
-
-                var posUint = pos < 0 ? pos + 0x100000000 : pos;
-                positionData.push({
-                  id: id,
-                  data: [posUint & 0xFF, (posUint >> 8) & 0xFF, (posUint >> 16) & 0xFF, (posUint >> 24) & 0xFF]
-                });
-              }
-
-              // Sync write goal positions
-              var positionPacket = self.buildSyncWritePacket(116, 4, positionData);
-              return self.sendPacket(positionPacket, false);
-            });
-          }
-
-          return Promise.resolve();
-        }).then(function() {
+        // Use WASM bulk torque control
+        var torquePromise = enable ? window.wasm.enable_torque() : window.wasm.disable_torque();
+        return torquePromise.then(function() {
           return { success: ids, failed: [] };
-        }).catch(function(err) {
-          console.error('Error setting torque:', err);
+        }).catch(function(e) {
+          console.error('Error setting torque:', e);
           return { success: [], failed: ids };
         });
       },
 
+      // Position control - convert degrees for WASM
       setPosition: function(id, position) {
-        var pos = Math.round(position);
-        var posUint = pos < 0 ? pos + 0x100000000 : pos;
-        var data = [posUint & 0xFF, (posUint >> 8) & 0xFF, (posUint >> 16) & 0xFF, (posUint >> 24) & 0xFF];
-        var packet = this.buildWritePacket(id, 116, data);
-        motorPositionCache[id] = pos;
-        return this.sendPacket(packet, false);
+        var self = this;
+        var deg = self.positionToDegrees(position);
+        motorPositionCache[id] = position;
+
+        // Route to appropriate WASM function based on motor ID
+        if (id === 17) {
+          return window.wasm.set_left_antenna(deg);
+        } else if (id === 18) {
+          return window.wasm.set_right_antenna(deg);
+        } else if (id >= 11 && id <= 16) {
+          // For head motors, we need to get all joints and set them
+          return window.wasm.get_head_joints().then(function(joints) {
+            joints[id - 11] = deg;
+            return window.wasm.set_head_joints(joints);
+          });
+        }
+        return Promise.resolve();
       },
 
       setPositionMultiple: function(ids, positions) {
-        var motorData = [];
+        var self = this;
+        // Convert positions to degrees
+        var degrees = positions.map(function(pos) {
+          return self.positionToDegrees(pos);
+        });
+
+        // Update cache
         for (var i = 0; i < ids.length; i++) {
-          var pos = Math.round(positions[i]);
-          var posUint = pos < 0 ? pos + 0x100000000 : pos;
-          motorData.push({
-            id: ids[i],
-            data: [posUint & 0xFF, (posUint >> 8) & 0xFF, (posUint >> 16) & 0xFF, (posUint >> 24) & 0xFF]
-          });
-          motorPositionCache[ids[i]] = pos;
+          motorPositionCache[ids[i]] = positions[i];
         }
-        var packet = this.buildSyncWritePacket(116, 4, motorData);
-        return this.sendPacket(packet, false);
+
+        // If all head motors (11-16), use set_head_joints
+        var headOnly = ids.every(function(id) { return id >= 11 && id <= 16; });
+        if (headOnly && ids.length === 6) {
+          return window.wasm.set_head_joints(degrees);
+        }
+
+        // If all motors (11-18), use set_all_joints
+        if (ids.length === 8) {
+          return window.wasm.set_all_joints(degrees);
+        }
+
+        // Otherwise, set individually (less efficient)
+        var promises = [];
+        for (var i = 0; i < ids.length; i++) {
+          promises.push(self.setPosition(ids[i], positions[i]));
+        }
+        return Promise.all(promises);
       },
 
       getPosition: function(id) {
         var self = this;
-        var packet = this.buildReadPacket(id, 132, 4);
-        return this.sendPacket(packet, true, id).then(function(response) {
-          if (response && response.length >= 15) {
-            var pos = response[9] | (response[10] << 8) | (response[11] << 16) | (response[12] << 24);
-            if (pos > 0x7FFFFFFF) pos -= 0x100000000;
+
+        // Route to appropriate WASM function
+        if (id === 17) {
+          return window.wasm.get_left_antenna().then(function(deg) {
+            var pos = self.degreesToPosition(deg);
             motorPositionCache[id] = pos;
             return pos;
-          }
-          return motorPositionCache[id] || 2048;
-        });
+          });
+        } else if (id === 18) {
+          return window.wasm.get_right_antenna().then(function(deg) {
+            var pos = self.degreesToPosition(deg);
+            motorPositionCache[id] = pos;
+            return pos;
+          });
+        } else if (id >= 11 && id <= 16) {
+          return window.wasm.get_head_joints().then(function(joints) {
+            var deg = joints[id - 11];
+            var pos = self.degreesToPosition(deg);
+            motorPositionCache[id] = pos;
+            return pos;
+          });
+        }
+        return Promise.resolve(motorPositionCache[id] || 2048);
       },
 
-      // Get motor temperature in °C (XL330 address 146)
+      // Get motor temperature (uses WASM)
       getTemperature: function(id) {
-        var packet = this.buildReadPacket(id, 146, 1);
-        return this.sendPacket(packet, true, id).then(function(response) {
-          if (response && response.length >= 12) {
-            return response[9];
-          }
-          return 0;
-        });
+        return window.wasm.get_motor_temperature(id);
       },
 
-      // Get motor load (-1000 to 1000) (XL330 address 126)
+      // Get motor load (uses WASM)
       getLoad: function(id) {
-        var packet = this.buildReadPacket(id, 126, 2);
-        return this.sendPacket(packet, true, id).then(function(response) {
-          if (response && response.length >= 13) {
-            var load = response[9] | (response[10] << 8);
-            if (load > 32767) load -= 65536;
-            return load;
-          }
-          return 0;
-        });
+        return window.wasm.get_motor_load(id);
       },
 
+      // Smooth motion using interpolation
       moveSmooth: function(id, targetPos, durationMs) {
         var self = this;
         return self.getPosition(id).then(function(startPos) {
           var steps = Math.max(10, Math.floor(durationMs / 20));
           var stepDelay = durationMs / steps;
           var delta = targetPos - startPos;
-          
+
           function doStep(step) {
             if (step > steps || stopRequested) return Promise.resolve();
             var t = step / steps;
@@ -628,14 +357,6 @@
           }
           return doStep(1);
         });
-      },
-
-      degreesToPosition: function(deg) {
-        return Math.round(2048 + (deg * 4096 / 360));
-      },
-
-      positionToDegrees: function(pos) {
-        return (pos - 2048) * 360 / 4096;
       },
 
       // Convenience methods for degrees (used by AI-generated code)
@@ -659,7 +380,6 @@
       setPositionLimited: function(id, targetPos) {
         var self = this;
 
-        // Get current position - read from motor if not cached
         function getStartPos() {
           if (motorPositionCache[id] !== undefined) {
             return Promise.resolve(motorPositionCache[id]);
@@ -669,11 +389,8 @@
 
         return getStartPos().then(function(startPos) {
           var delta = Math.abs(targetPos - startPos);
-
-          // Calculate duration based on max speed
           var durationMs = (delta / self.maxStepsPerSecond) * 1000;
           if (durationMs < 50) {
-            // Very small move, just do it directly
             return self.setPosition(id, targetPos);
           }
 
@@ -695,11 +412,10 @@
         });
       },
 
-      // Speed-limited multi-motor move (all motors move together, speed limited by slowest)
+      // Speed-limited multi-motor move
       setPositionMultipleLimited: function(ids, positions) {
         var self = this;
 
-        // First, get all current positions (read from motor if not cached)
         var positionPromises = ids.map(function(id) {
           if (motorPositionCache[id] !== undefined) {
             return Promise.resolve(motorPositionCache[id]);
@@ -708,17 +424,14 @@
         });
 
         return Promise.all(positionPromises).then(function(startPositions) {
-          // Calculate deltas and find max
           var maxDelta = 0;
           for (var i = 0; i < ids.length; i++) {
             var delta = Math.abs(positions[i] - startPositions[i]);
             if (delta > maxDelta) maxDelta = delta;
           }
 
-          // Calculate duration based on the motor that needs to move the most
           var durationMs = (maxDelta / self.maxStepsPerSecond) * 1000;
           if (durationMs < 50) {
-            // Very small move, just do it directly
             return self.setPositionMultiple(ids, positions);
           }
 
@@ -743,43 +456,25 @@
       },
 
       // ========== Kinematics API Methods ==========
-      // These are called by AI-generated JavaScript code
-
-      // Get all 8 motor positions as an array
+      // Get all motor positions as degrees array (uses WASM)
       getAllPositions: function() {
         var self = this;
-        if (!self.connected || !self.writer) return Promise.resolve(self.motorIds.map(function() { return 0; }));
+        if (!self.connected) {
+          return Promise.resolve(self.motorIds.map(function() { return 0; }));
+        }
 
-        var packet = this.buildSyncReadPacket(132, 4, this.motorIds);
-        self.readBuffer = [];
-
-        return self.writer.write(packet).then(function() {
-          return self.waitForSyncReadPackets(self.motorIds);
-        }).then(function(packets) {
-          var degrees = [];
-          for (var i = 0; i < self.motorIds.length; i++) {
-            var id = self.motorIds[i];
-            var response = packets[id];
-            if (response && response.length >= 15) {
-              var pos = response[9] | (response[10] << 8) | (response[11] << 16) | (response[12] << 24);
-              if (pos > 0x7FFFFFFF) pos -= 0x100000000;
-              motorPositionCache[id] = pos;
-              degrees.push(self.positionToDegrees(pos));
-            } else {
-              degrees.push(self.positionToDegrees(motorPositionCache[id] || 2048));
-            }
+        return window.wasm.get_head_joints().then(function(headJoints) {
+          // Update cache
+          for (var i = 0; i < headJoints.length; i++) {
+            motorPositionCache[11 + i] = self.degreesToPosition(headJoints[i]);
           }
-          return degrees;
+          return headJoints;
         });
       },
 
-      // Set all 8 motor positions (speed-limited) - accepts degrees
+      // Set all motor positions from degrees array (uses WASM)
       setAllPositions: function(degrees) {
-        var self = this;
-        var positions = degrees.map(function(deg) {
-          return self.degreesToPosition(deg);
-        });
-        return this.setPositionMultipleLimited(this.motorIds, positions);
+        return window.wasm.set_head_joints(degrees);
       },
 
       // Forward Kinematics: joint degrees -> coordinates [x, y, z, roll, pitch, yaw]
@@ -792,13 +487,13 @@
         return callIK(coordinates);
       },
 
-      // Combined: Set head to coordinates directly (does IK conversion internally)
+      // Set head to coordinates (does IK conversion internally)
       setHeadCoordinates: function(coordinates) {
         var joints = this.coordinatesToJoints(coordinates);
         return this.setAllPositions(joints);
       },
 
-      // Combined: Get current head coordinates (does FK conversion internally)
+      // Get current head coordinates (does FK conversion internally)
       getHeadCoordinates: function() {
         var self = this;
         return this.getAllPositions().then(function(joints) {
@@ -812,7 +507,14 @@
       document.getElementById('statusDot').className = 'status-dot' + (connected ? ' connected' : '');
       document.getElementById('statusText').textContent = connected ? 'Connected' : 'Disconnected';
       document.getElementById('connectBtn').textContent = connected ? '🔌 Disconnect' : '🔌 Connect';
-      
+
+      // Disable/enable URL input based on connection status
+      var urlInput = document.getElementById('robotUrl');
+      if (urlInput) {
+        urlInput.disabled = connected;
+        urlInput.style.opacity = connected ? '0.5' : '1';
+      }
+
       // Reset motor badges
       if (!connected) {
         Robot.motorIds.forEach(function(id) {
@@ -853,49 +555,65 @@
 
     function checkMotors() {
       if (!Robot.connected) { logConsole('Not connected', 'error'); return; }
-      logConsole('Checking all motors...', 'info');
-      Robot.checkAllMotors().then(function(results) {
+      logConsole('Checking all motors for hardware errors...', 'info');
+
+      // Use the new get_motor_errors function for accurate hardware error detection
+      window.wasm.get_motor_errors().then(function(errors) {
+        var allMotors = [11, 12, 13, 14, 15, 16, 17, 18];
         var ok = [];
-        var failed = [];
-        var alerts = [];
-        for (var id in results) {
+        var withErrors = [];
+
+        for (var i = 0; i < allMotors.length; i++) {
+          var id = allMotors[i];
           var el = document.getElementById('motor' + id);
-          if (results[id].ok) {
+          var errorStatus = errors[i];
+
+          if (errorStatus === 0) {
             ok.push(id);
             if (el) {
               el.classList.remove('error');
               el.classList.add('active');
             }
           } else {
-            failed.push(id);
+            withErrors.push(id);
             if (el) {
               el.classList.add('error');
               el.classList.remove('active');
             }
-            if (results[id].hasHardwareAlert) {
-              alerts.push(id);
-            }
+            logConsole('Motor ' + id + ' has hardware error: 0x' + errorStatus.toString(16).toUpperCase(), 'warn');
           }
         }
-        if (failed.length === 0) {
+
+        if (withErrors.length === 0) {
           logConsole('All ' + ok.length + ' motors OK', 'success');
         } else {
           logConsole('Motors OK: ' + ok.join(', '), 'success');
-          logConsole('Motors FAILED: ' + failed.join(', '), 'error');
-          if (alerts.length > 0) {
-            logConsole('Motors with hardware alert (need reboot): ' + alerts.join(', '), 'warn');
-          }
+          logConsole('Motors with errors (need reboot): ' + withErrors.join(', '), 'error');
         }
+      }).catch(function(e) {
+        logConsole('Error checking motors: ' + e.message, 'error');
       });
     }
 
     function rebootAllMotors() {
       if (!Robot.connected) { logConsole('Not connected', 'error'); return; }
-      if (!confirm('Reboot all motors? This will clear hardware errors but motors will lose torque.')) return;
-      logConsole('Rebooting all motors...', 'warn');
-      Robot.rebootAllMotors().then(function() {
-        logConsole('All motors rebooted', 'success');
-        checkMotors();
+      if (!confirm('Check and reboot motors with errors? Motors will lose torque during reboot.')) return;
+      logConsole('Checking and rebooting motors with errors...', 'warn');
+
+      // Use the new check_and_reboot_motors function
+      window.wasm.check_and_reboot_motors().then(function(result) {
+        if (result.motors_rebooted.length === 0) {
+          logConsole('No motors needed reboot', 'success');
+        } else {
+          logConsole('Rebooted ' + result.motors_rebooted.length + ' motor(s): ' + result.motors_rebooted.join(', '), 'success');
+        }
+        if (result.motors_no_response.length > 0) {
+          logConsole('Motors did not respond: ' + result.motors_no_response.join(', '), 'warn');
+        }
+        // Re-check motors after reboot
+        setTimeout(checkMotors, 500);
+      }).catch(function(e) {
+        logConsole('Error: ' + e.message, 'error');
       });
     }
 
@@ -1501,670 +1219,9 @@
         this.setTooltip('Show a popup alert message');
       }
     };
-    Blockly.JavaScript.forBlock['alert'] = function(block) {
-      var msg = Blockly.JavaScript.valueToCode(block, 'MESSAGE', Blockly.JavaScript.ORDER_ATOMIC) || '""';
-      return 'alert(' + msg + ');\n';
-    };
-
-    // ========== Python Code Generators ==========
-    // Initialize Python generator
-    Blockly.Python = new Blockly.Generator('Python');
-
-    // Python operator precedence
-    Blockly.Python.ORDER_ATOMIC = 0;
-    Blockly.Python.ORDER_COLLECTION = 1;
-    Blockly.Python.ORDER_STRING_CONVERSION = 1;
-    Blockly.Python.ORDER_MEMBER = 2;
-    Blockly.Python.ORDER_FUNCTION_CALL = 2;
-    Blockly.Python.ORDER_EXPONENTIATION = 3;
-    Blockly.Python.ORDER_UNARY_SIGN = 4;
-    Blockly.Python.ORDER_BITWISE_NOT = 4;
-    Blockly.Python.ORDER_MULTIPLICATIVE = 5;
-    Blockly.Python.ORDER_ADDITIVE = 6;
-    Blockly.Python.ORDER_BITWISE_SHIFT = 7;
-    Blockly.Python.ORDER_BITWISE_AND = 8;
-    Blockly.Python.ORDER_BITWISE_XOR = 9;
-    Blockly.Python.ORDER_BITWISE_OR = 10;
-    Blockly.Python.ORDER_RELATIONAL = 11;
-    Blockly.Python.ORDER_LOGICAL_NOT = 12;
-    Blockly.Python.ORDER_LOGICAL_AND = 13;
-    Blockly.Python.ORDER_LOGICAL_OR = 14;
-    Blockly.Python.ORDER_CONDITIONAL = 15;
-    Blockly.Python.ORDER_LAMBDA = 16;
-    Blockly.Python.ORDER_NONE = 99;
-
-    // Initialize the generator
-    Blockly.Python.init = function(workspace) {
-      Blockly.Python.definitions_ = Object.create(null);
-      Blockly.Python.functionNames_ = Object.create(null);
-      if (!Blockly.Python.nameDB_) {
-        Blockly.Python.nameDB_ = new Blockly.Names(Blockly.Python.RESERVED_WORDS_);
-      } else {
-        Blockly.Python.nameDB_.reset();
-      }
-      Blockly.Python.nameDB_.setVariableMap(workspace.getVariableMap());
-      Blockly.Python.nameDB_.populateVariables(workspace);
-      Blockly.Python.nameDB_.populateProcedures(workspace);
-    };
-
-    Blockly.Python.finish = function(code) {
-      var definitions = [];
-      for (var name in Blockly.Python.definitions_) {
-        definitions.push(Blockly.Python.definitions_[name]);
-      }
-      var allDefs = definitions.join('\n\n');
-      return allDefs.replace(/\n\n+/g, '\n\n').replace(/\n*$/, '\n') + '\n\n' + code;
-    };
-
-    Blockly.Python.scrubNakedValue = function(line) {
-      return line + '\n';
-    };
-
-    Blockly.Python.quote_ = function(string) {
-      string = string.replace(/\\/g, '\\\\').replace(/\n/g, '\\\n');
-      return '"' + string + '"';
-    };
-
-    Blockly.Python.scrub_ = function(block, code, thisOnly) {
-      var nextBlock = block.nextConnection && block.nextConnection.targetBlock();
-      var nextCode = '';
-      if (nextBlock && !thisOnly) {
-        nextCode = Blockly.Python.blockToCode(nextBlock);
-      }
-      return code + nextCode;
-    };
-
-    Blockly.Python.RESERVED_WORDS_ = 'False,None,True,and,as,assert,break,class,continue,def,del,elif,else,except,finally,for,from,global,if,import,in,is,lambda,nonlocal,not,or,pass,raise,return,try,while,with,yield';
-
-    // Helper methods for Python generator
-    Blockly.Python.INDENT = '    ';
-
-    Blockly.Python.valueToCode = function(block, name, outerOrder) {
-      if (isNaN(outerOrder)) {
-        throw TypeError('Expecting valid order from block: ' + block.type);
-      }
-      var targetBlock = block.getInputTargetBlock(name);
-      if (!targetBlock) {
-        return '';
-      }
-      var tuple = this.blockToCode(targetBlock);
-      if (tuple === '') {
-        return '';
-      }
-      if (!Array.isArray(tuple)) {
-        return tuple;
-      }
-      var code = tuple[0];
-      var innerOrder = tuple[1];
-      if (isNaN(innerOrder)) {
-        throw TypeError('Expecting valid order from value block: ' + targetBlock.type);
-      }
-      if (!code) {
-        return '';
-      }
-      var parensNeeded = false;
-      if (outerOrder <= innerOrder) {
-        if (outerOrder == innerOrder && (outerOrder == 0 || outerOrder == 99)) {
-          parensNeeded = false;
-        } else {
-          parensNeeded = true;
-        }
-      }
-      return parensNeeded ? '(' + code + ')' : code;
-    };
-
-    Blockly.Python.statementToCode = function(block, name) {
-      var targetBlock = block.getInputTargetBlock(name);
-      var code = this.blockToCode(targetBlock);
-      if (typeof code !== 'string') {
-        throw TypeError('Expecting code from statement block: ' + (targetBlock && targetBlock.type));
-      }
-      if (code) {
-        code = Blockly.Python.prefixLines(code, Blockly.Python.INDENT);
-      }
-      return code;
-    };
-
-    Blockly.Python.prefixLines = function(text, prefix) {
-      return prefix + text.replace(/\n(.)/g, '\n' + prefix + '$1');
-    };
-
-    Blockly.Python.blockToCode = function(block) {
-      if (!block) {
-        return '';
-      }
-      if (!block.isEnabled()) {
-        return this.blockToCode(block.getNextBlock());
-      }
-
-      var func = this.forBlock[block.type];
-      if (typeof func !== 'function') {
-        throw Error('Language "' + this.name_ + '" does not know how to generate code for block type "' + block.type + '".');
-      }
-      var code = func.call(this, block);
-      if (Array.isArray(code)) {
-        return [this.scrub_(block, code[0], true), code[1]];
-      } else if (typeof code === 'string') {
-        var id = block.id.replace(/\$/g, '$$$$');
-        return this.scrub_(block, code, false);
-      } else if (code === null) {
-        return '';
-      } else {
-        throw SyntaxError('Invalid code generated: ' + code);
-      }
-    };
-
-    Blockly.Python.workspaceToCode = function(workspace) {
-      if (!workspace) {
-        console.warn('No workspace was provided to workspaceToCode');
-        return '';
-      }
-      var code = [];
-      this.init(workspace);
-      var blocks = workspace.getTopBlocks(true);
-      for (var i = 0, block; (block = blocks[i]); i++) {
-        var line = this.blockToCode(block);
-        if (Array.isArray(line)) {
-          line = line[0];
-        }
-        if (line) {
-          code.push(line);
-        }
-      }
-      code = code.join('\n');
-      code = this.finish(code);
-      code = code.replace(/^\s+\n/, '');
-      code = code.replace(/\n\s+$/, '\n');
-      code = code.replace(/[ \t]+\n/g, '\n');
-      return code;
-    };
-
-    // === Python Connection Blocks ===
-    Blockly.Python.forBlock['enable_torque'] = function(block) {
-      return '# enable_torque not supported in Python API\n';
-    };
-
-    Blockly.Python.forBlock['disable_torque'] = function(block) {
-      return '# disable_torque not supported in Python API\n';
-    };
-
-    Blockly.Python.forBlock['enable_all'] = function(block) {
-      return '# enable_all not supported in Python API\n';
-    };
-
-    Blockly.Python.forBlock['disable_all'] = function(block) {
-      return '# disable_all not supported in Python API\n';
-    };
-
-    Blockly.Python.forBlock['check_joints'] = function(block) {
-      return '# check_joints not supported in Python API\n';
-    };
-
-    Blockly.Python.forBlock['ping_joint'] = function(block) {
-      return ['False', Blockly.Python.ORDER_ATOMIC];
-    };
-
-    Blockly.Python.forBlock['reboot_joint'] = function(block) {
-      return '# reboot_joint not supported in Python API\n';
-    };
-
-    Blockly.Python.forBlock['reboot_all'] = function(block) {
-      return '# reboot_all not supported in Python API\n';
-    };
-
-    // === Python Joint Blocks ===
-    Blockly.Python.forBlock['set_joint'] = function(block) {
-      var motor = block.getFieldValue('MOTOR');
-      var joint = Blockly.Python.valueToCode(block, 'JOINT', Blockly.Python.ORDER_ATOMIC) || '2048';
-      return '# set_joint not directly supported - use goto_target or set_target instead\n';
-    };
-
-    Blockly.Python.forBlock['set_degrees'] = function(block) {
-      var motor = block.getFieldValue('MOTOR');
-      var deg = Blockly.Python.valueToCode(block, 'DEGREES', Blockly.Python.ORDER_ATOMIC) || '0';
-      var antennaIndex = motor === '17' ? '0' : '1';
-      Blockly.Python.definitions_['import_numpy'] = 'import numpy as np';
-      return 'mini.set_target(antennas=[np.deg2rad(' + deg + '), 0] if ' + antennaIndex + ' == 0 else [0, np.deg2rad(' + deg + ')])\n';
-    };
-
-    Blockly.Python.forBlock['get_joint'] = function(block) {
-      return ['0', Blockly.Python.ORDER_ATOMIC];
-    };
-
-    Blockly.Python.forBlock['get_degrees'] = function(block) {
-      return ['0', Blockly.Python.ORDER_ATOMIC];
-    };
-
-    Blockly.Python.forBlock['move_by'] = function(block) {
-      var motor = block.getFieldValue('MOTOR');
-      var amount = Blockly.Python.valueToCode(block, 'AMOUNT', Blockly.Python.ORDER_ATOMIC) || '0';
-      return '# move_by not supported in Python API\n';
-    };
-
-    Blockly.Python.forBlock['move_smooth'] = function(block) {
-      var motor = block.getFieldValue('MOTOR');
-      var joint = Blockly.Python.valueToCode(block, 'JOINT', Blockly.Python.ORDER_ATOMIC) || '2048';
-      var dur = Blockly.Python.valueToCode(block, 'DURATION', Blockly.Python.ORDER_ATOMIC) || '1';
-      return '# move_smooth - use goto_target with duration instead\n';
-    };
-
-    // === Python Kinematics Blocks ===
-    Blockly.Python.forBlock['get_head_coordinates'] = function(block) {
-      Blockly.Python.definitions_['import_reachy'] = 'from reachy_mini import ReachyMini';
-      Blockly.Python.definitions_['import_utils'] = 'from reachy_mini.utils import create_head_pose';
-      return ['mini.head.pose', Blockly.Python.ORDER_MEMBER];
-    };
-
-    Blockly.Python.forBlock['set_head_coordinates'] = function(block) {
-      var coords = Blockly.Python.valueToCode(block, 'COORDS', Blockly.Python.ORDER_ATOMIC) || 'np.eye(4)';
-      Blockly.Python.definitions_['import_reachy'] = 'from reachy_mini import ReachyMini';
-      return 'mini.goto_target(' + coords + ', duration=1.0)\n';
-    };
-
-    Blockly.Python.forBlock['joints_to_coordinates'] = function(block) {
-      var joints = Blockly.Python.valueToCode(block, 'JOINTS', Blockly.Python.ORDER_ATOMIC) || '[]';
-      return ['[]', Blockly.Python.ORDER_ATOMIC];
-    };
-
-    Blockly.Python.forBlock['coordinates_to_joints'] = function(block) {
-      var coordinates = Blockly.Python.valueToCode(block, 'COORDINATES', Blockly.Python.ORDER_ATOMIC) || '[0,0,0,0,0,0]';
-      return ['[]', Blockly.Python.ORDER_ATOMIC];
-    };
-
-    Blockly.Python.forBlock['create_coordinates'] = function(block) {
-      var x = Blockly.Python.valueToCode(block, 'X', Blockly.Python.ORDER_ATOMIC) || '0';
-      var y = Blockly.Python.valueToCode(block, 'Y', Blockly.Python.ORDER_ATOMIC) || '0';
-      var z = Blockly.Python.valueToCode(block, 'Z', Blockly.Python.ORDER_ATOMIC) || '0';
-      var roll = Blockly.Python.valueToCode(block, 'ROLL', Blockly.Python.ORDER_ATOMIC) || '0';
-      var pitch = Blockly.Python.valueToCode(block, 'PITCH', Blockly.Python.ORDER_ATOMIC) || '0';
-      var yaw = Blockly.Python.valueToCode(block, 'YAW', Blockly.Python.ORDER_ATOMIC) || '0';
-      Blockly.Python.definitions_['import_utils'] = 'from reachy_mini.utils import create_head_pose';
-      return ['create_head_pose(x=' + x + ', y=' + y + ', z=' + z + ', roll=' + roll + ', pitch=' + pitch + ', yaw=' + yaw + ', degrees=True, mm=True)', Blockly.Python.ORDER_FUNCTION_CALL];
-    };
-
-    Blockly.Python.forBlock['get_coordinate'] = function(block) {
-      var component = block.getFieldValue('COMPONENT');
-      var coordinates = Blockly.Python.valueToCode(block, 'COORDINATES', Blockly.Python.ORDER_MEMBER) || 'np.eye(4)';
-      var componentMap = {'0': '[0,3]', '1': '[1,3]', '2': '[2,3]', '3': 'roll', '4': 'pitch', '5': 'yaw'};
-      if (component === '0' || component === '1' || component === '2') {
-        return ['(' + coordinates + ')' + componentMap[component], Blockly.Python.ORDER_MEMBER];
-      }
-      return ['0', Blockly.Python.ORDER_ATOMIC];
-    };
-
-    // === Python Sensing Blocks ===
-    Blockly.Python.forBlock['is_moving'] = function(block) {
-      return ['False', Blockly.Python.ORDER_ATOMIC];
-    };
-
-    Blockly.Python.forBlock['wait_until_stopped'] = function(block) {
-      var motor = block.getFieldValue('MOTOR');
-      var timeout = Blockly.Python.valueToCode(block, 'TIMEOUT', Blockly.Python.ORDER_ATOMIC) || '5';
-      return '# wait_until_stopped not supported in Python API\n';
-    };
-
-    Blockly.Python.forBlock['get_load'] = function(block) {
-      return ['0', Blockly.Python.ORDER_ATOMIC];
-    };
-
-    Blockly.Python.forBlock['get_temperature'] = function(block) {
-      return ['0', Blockly.Python.ORDER_ATOMIC];
-    };
-
-    Blockly.Python.forBlock['joint_in_range'] = function(block) {
-      var motor = block.getFieldValue('MOTOR');
-      var min = Blockly.Python.valueToCode(block, 'MIN', Blockly.Python.ORDER_ATOMIC) || '-180';
-      var max = Blockly.Python.valueToCode(block, 'MAX', Blockly.Python.ORDER_ATOMIC) || '180';
-      return ['False', Blockly.Python.ORDER_ATOMIC];
-    };
-
-    // === Python Timing Blocks ===
-    Blockly.Python.forBlock['wait'] = function(block) {
-      var time = Blockly.Python.valueToCode(block, 'TIME', Blockly.Python.ORDER_ATOMIC) || '1';
-      Blockly.Python.definitions_['import_time'] = 'import time';
-      return 'time.sleep(' + time + ')\n';
-    };
-
-    Blockly.Python.forBlock['wait_ms'] = function(block) {
-      var time = Blockly.Python.valueToCode(block, 'TIME', Blockly.Python.ORDER_ATOMIC) || '100';
-      Blockly.Python.definitions_['import_time'] = 'import time';
-      return 'time.sleep(' + time + ' / 1000)\n';
-    };
-
-    Blockly.Python.forBlock['get_time'] = function(block) {
-      Blockly.Python.definitions_['import_time'] = 'import time';
-      return ['int(time.time() * 1000)', Blockly.Python.ORDER_FUNCTION_CALL];
-    };
-
-    Blockly.Python.forBlock['reset_timer'] = function(block) {
-      return 'program_timer = time.time()\n';
-    };
-
-    Blockly.Python.forBlock['timer_value'] = function(block) {
-      Blockly.Python.definitions_['import_time'] = 'import time';
-      return ['(time.time() - program_timer)', Blockly.Python.ORDER_ADDITIVE];
-    };
-
-    // === Python Output Blocks ===
-    Blockly.Python.forBlock['log'] = function(block) {
-      var msg = Blockly.Python.valueToCode(block, 'MESSAGE', Blockly.Python.ORDER_ATOMIC) || '""';
-      return 'print(' + msg + ')\n';
-    };
-
-    Blockly.Python.forBlock['log_joint'] = function(block) {
-      var motor = block.getFieldValue('MOTOR');
-      return 'print("Joint ' + motor + ':")  # Joint values not readable in Python API\n';
-    };
-
-    Blockly.Python.forBlock['log_type'] = function(block) {
-      var msg = Blockly.Python.valueToCode(block, 'MESSAGE', Blockly.Python.ORDER_ATOMIC) || '""';
-      var type = block.getFieldValue('TYPE');
-      return 'print(' + msg + ')  # Log type: ' + type + '\n';
-    };
-
-    Blockly.Python.forBlock['alert'] = function(block) {
-      var msg = Blockly.Python.valueToCode(block, 'MESSAGE', Blockly.Python.ORDER_ATOMIC) || '""';
-      return 'print(' + msg + ')  # Alert\n';
-    };
-
-    // === Python Built-in Block Generators ===
-    // Add Python generators for standard Blockly blocks
-
-    // Controls blocks
-    Blockly.Python.forBlock['controls_if'] = function(block) {
-      var n = 0;
-      var code = '', branchCode, conditionCode;
-      if (Blockly.Python.STATEMENT_PREFIX) {
-        code += Blockly.Python.injectId(Blockly.Python.STATEMENT_PREFIX, block);
-      }
-      do {
-        conditionCode = Blockly.Python.valueToCode(block, 'IF' + n, Blockly.Python.ORDER_NONE) || 'False';
-        branchCode = Blockly.Python.statementToCode(block, 'DO' + n) || Blockly.Python.PASS;
-        if (Blockly.Python.STATEMENT_SUFFIX) {
-          branchCode = Blockly.Python.prefixLines(Blockly.Python.injectId(Blockly.Python.STATEMENT_SUFFIX, block), Blockly.Python.INDENT) + branchCode;
-        }
-        code += (n === 0 ? 'if ' : 'elif ') + conditionCode + ':\n' + branchCode;
-        n++;
-      } while (block.getInput('IF' + n));
-
-      if (block.getInput('ELSE') || Blockly.Python.STATEMENT_SUFFIX) {
-        branchCode = Blockly.Python.statementToCode(block, 'ELSE') || Blockly.Python.PASS;
-        if (Blockly.Python.STATEMENT_SUFFIX) {
-          branchCode = Blockly.Python.prefixLines(Blockly.Python.injectId(Blockly.Python.STATEMENT_SUFFIX, block), Blockly.Python.INDENT) + branchCode;
-        }
-        code += 'else:\n' + branchCode;
-      }
-      return code;
-    };
-
-    Blockly.Python.forBlock['controls_repeat_ext'] = function(block) {
-      var repeats = Blockly.Python.valueToCode(block, 'TIMES', Blockly.Python.ORDER_NONE) || '0';
-      var branch = Blockly.Python.statementToCode(block, 'DO') || Blockly.Python.PASS;
-      var loopVar = Blockly.Python.nameDB_.getDistinctName('count', Blockly.VARIABLE_CATEGORY_NAME);
-      return 'for ' + loopVar + ' in range(int(' + repeats + ')):\n' + branch;
-    };
-
-    Blockly.Python.forBlock['controls_whileUntil'] = function(block) {
-      var until = block.getFieldValue('MODE') === 'UNTIL';
-      var argument0 = Blockly.Python.valueToCode(block, 'BOOL', until ? Blockly.Python.ORDER_LOGICAL_NOT : Blockly.Python.ORDER_NONE) || 'False';
-      var branch = Blockly.Python.statementToCode(block, 'DO') || Blockly.Python.PASS;
-      if (until) {
-        argument0 = 'not ' + argument0;
-      }
-      return 'while ' + argument0 + ':\n' + branch;
-    };
-
-    Blockly.Python.forBlock['controls_for'] = function(block) {
-      var variable0 = Blockly.Python.nameDB_.getName(block.getFieldValue('VAR'), Blockly.VARIABLE_CATEGORY_NAME);
-      var argument0 = Blockly.Python.valueToCode(block, 'FROM', Blockly.Python.ORDER_NONE) || '0';
-      var argument1 = Blockly.Python.valueToCode(block, 'TO', Blockly.Python.ORDER_NONE) || '0';
-      var increment = Blockly.Python.valueToCode(block, 'BY', Blockly.Python.ORDER_NONE) || '1';
-      var branch = Blockly.Python.statementToCode(block, 'DO') || Blockly.Python.PASS;
-      var code = 'for ' + variable0 + ' in range(int(' + argument0 + '), int(' + argument1 + ') + 1, int(' + increment + ')):\n' + branch;
-      return code;
-    };
-
-    Blockly.Python.forBlock['controls_forEach'] = function(block) {
-      var variable0 = Blockly.Python.nameDB_.getName(block.getFieldValue('VAR'), Blockly.VARIABLE_CATEGORY_NAME);
-      var argument0 = Blockly.Python.valueToCode(block, 'LIST', Blockly.Python.ORDER_RELATIONAL) || '[]';
-      var branch = Blockly.Python.statementToCode(block, 'DO') || Blockly.Python.PASS;
-      var code = 'for ' + variable0 + ' in ' + argument0 + ':\n' + branch;
-      return code;
-    };
-
-    Blockly.Python.forBlock['controls_flow_statements'] = function(block) {
-      var keyword = block.getFieldValue('FLOW');
-      if (keyword === 'BREAK') {
-        return 'break\n';
-      } else if (keyword === 'CONTINUE') {
-        return 'continue\n';
-      }
-      return '';
-    };
-
-    // Logic blocks
-    Blockly.Python.forBlock['logic_boolean'] = function(block) {
-      var code = (block.getFieldValue('BOOL') === 'TRUE') ? 'True' : 'False';
-      return [code, Blockly.Python.ORDER_ATOMIC];
-    };
-
-    Blockly.Python.forBlock['logic_null'] = function(block) {
-      return ['None', Blockly.Python.ORDER_ATOMIC];
-    };
-
-    Blockly.Python.forBlock['logic_negate'] = function(block) {
-      var order = Blockly.Python.ORDER_LOGICAL_NOT;
-      var argument0 = Blockly.Python.valueToCode(block, 'BOOL', order) || 'True';
-      return ['not ' + argument0, order];
-    };
-
-    Blockly.Python.forBlock['logic_compare'] = function(block) {
-      var OPERATORS = {'EQ': '==', 'NEQ': '!=', 'LT': '<', 'LTE': '<=', 'GT': '>', 'GTE': '>='};
-      var operator = OPERATORS[block.getFieldValue('OP')];
-      var order = Blockly.Python.ORDER_RELATIONAL;
-      var argument0 = Blockly.Python.valueToCode(block, 'A', order) || '0';
-      var argument1 = Blockly.Python.valueToCode(block, 'B', order) || '0';
-      return [argument0 + ' ' + operator + ' ' + argument1, order];
-    };
-
-    Blockly.Python.forBlock['logic_operation'] = function(block) {
-      var operator = (block.getFieldValue('OP') === 'AND') ? 'and' : 'or';
-      var order = (operator === 'and') ? Blockly.Python.ORDER_LOGICAL_AND : Blockly.Python.ORDER_LOGICAL_OR;
-      var argument0 = Blockly.Python.valueToCode(block, 'A', order) || 'False';
-      var argument1 = Blockly.Python.valueToCode(block, 'B', order) || 'False';
-      return [argument0 + ' ' + operator + ' ' + argument1, order];
-    };
-
-    // Math blocks
-    Blockly.Python.forBlock['math_number'] = function(block) {
-      var code = Number(block.getFieldValue('NUM'));
-      var order = code < 0 ? Blockly.Python.ORDER_UNARY_SIGN : Blockly.Python.ORDER_ATOMIC;
-      return [code, order];
-    };
-
-    Blockly.Python.forBlock['math_arithmetic'] = function(block) {
-      var OPERATORS = {
-        'ADD': [' + ', Blockly.Python.ORDER_ADDITIVE],
-        'MINUS': [' - ', Blockly.Python.ORDER_ADDITIVE],
-        'MULTIPLY': [' * ', Blockly.Python.ORDER_MULTIPLICATIVE],
-        'DIVIDE': [' / ', Blockly.Python.ORDER_MULTIPLICATIVE],
-        'POWER': [' ** ', Blockly.Python.ORDER_EXPONENTIATION]
-      };
-      var tuple = OPERATORS[block.getFieldValue('OP')];
-      var operator = tuple[0];
-      var order = tuple[1];
-      var argument0 = Blockly.Python.valueToCode(block, 'A', order) || '0';
-      var argument1 = Blockly.Python.valueToCode(block, 'B', order) || '0';
-      return [argument0 + operator + argument1, order];
-    };
-
-    Blockly.Python.forBlock['math_constant'] = function(block) {
-      var CONSTANTS = {
-        'PI': ['math.pi', Blockly.Python.ORDER_MEMBER],
-        'E': ['math.e', Blockly.Python.ORDER_MEMBER],
-        'GOLDEN_RATIO': ['(1 + math.sqrt(5)) / 2', Blockly.Python.ORDER_MULTIPLICATIVE],
-        'SQRT2': ['math.sqrt(2)', Blockly.Python.ORDER_FUNCTION_CALL],
-        'SQRT1_2': ['math.sqrt(1.0 / 2)', Blockly.Python.ORDER_FUNCTION_CALL],
-        'INFINITY': ['float("inf")', Blockly.Python.ORDER_FUNCTION_CALL]
-      };
-      Blockly.Python.definitions_['import_math'] = 'import math';
-      var constant = block.getFieldValue('CONSTANT');
-      if (constant in CONSTANTS) {
-        return CONSTANTS[constant];
-      }
-      return ['0', Blockly.Python.ORDER_ATOMIC];
-    };
-
-    Blockly.Python.forBlock['math_single'] = function(block) {
-      var OPERATORS = {
-        'ROOT': ['math.sqrt', Blockly.Python.ORDER_FUNCTION_CALL],
-        'ABS': ['abs', Blockly.Python.ORDER_FUNCTION_CALL],
-        'NEG': ['-', Blockly.Python.ORDER_UNARY_SIGN],
-        'LN': ['math.log', Blockly.Python.ORDER_FUNCTION_CALL],
-        'LOG10': ['math.log10', Blockly.Python.ORDER_FUNCTION_CALL],
-        'EXP': ['math.exp', Blockly.Python.ORDER_FUNCTION_CALL],
-        'POW10': ['math.pow(10, ', Blockly.Python.ORDER_FUNCTION_CALL],
-        'SIN': ['math.sin', Blockly.Python.ORDER_FUNCTION_CALL],
-        'COS': ['math.cos', Blockly.Python.ORDER_FUNCTION_CALL],
-        'TAN': ['math.tan', Blockly.Python.ORDER_FUNCTION_CALL],
-        'ASIN': ['math.asin', Blockly.Python.ORDER_FUNCTION_CALL],
-        'ACOS': ['math.acos', Blockly.Python.ORDER_FUNCTION_CALL],
-        'ATAN': ['math.atan', Blockly.Python.ORDER_FUNCTION_CALL]
-      };
-      var operator = block.getFieldValue('OP');
-      var tuple = OPERATORS[operator];
-      var func = tuple[0];
-      var order = tuple[1];
-      var arg = Blockly.Python.valueToCode(block, 'NUM', Blockly.Python.ORDER_NONE) || '0';
-      Blockly.Python.definitions_['import_math'] = 'import math';
-
-      var code;
-      if (operator === 'NEG') {
-        code = func + arg;
-      } else if (operator === 'POW10') {
-        code = func + arg + ')';
-      } else {
-        code = func + '(' + arg + ')';
-      }
-      return [code, order];
-    };
-
-    Blockly.Python.forBlock['math_trig'] = function(block) {
-      var OPERATORS = {
-        'SIN': 'math.sin',
-        'COS': 'math.cos',
-        'TAN': 'math.tan',
-        'ASIN': 'math.asin',
-        'ACOS': 'math.acos',
-        'ATAN': 'math.atan'
-      };
-      var operator = block.getFieldValue('OP');
-      var arg = Blockly.Python.valueToCode(block, 'NUM', Blockly.Python.ORDER_NONE) || '0';
-      Blockly.Python.definitions_['import_math'] = 'import math';
-      var code = OPERATORS[operator] + '(' + arg + ')';
-      return [code, Blockly.Python.ORDER_FUNCTION_CALL];
-    };
-
-    Blockly.Python.forBlock['math_round'] = function(block) {
-      var OPERATORS = {
-        'ROUND': 'round',
-        'ROUNDUP': 'math.ceil',
-        'ROUNDDOWN': 'math.floor'
-      };
-      var operator = block.getFieldValue('OP');
-      var arg = Blockly.Python.valueToCode(block, 'NUM', Blockly.Python.ORDER_NONE) || '0';
-      if (operator === 'ROUNDUP' || operator === 'ROUNDDOWN') {
-        Blockly.Python.definitions_['import_math'] = 'import math';
-      }
-      var code = OPERATORS[operator] + '(' + arg + ')';
-      return [code, Blockly.Python.ORDER_FUNCTION_CALL];
-    };
-
-    Blockly.Python.forBlock['math_modulo'] = function(block) {
-      var arg1 = Blockly.Python.valueToCode(block, 'DIVIDEND', Blockly.Python.ORDER_MULTIPLICATIVE) || '0';
-      var arg2 = Blockly.Python.valueToCode(block, 'DIVISOR', Blockly.Python.ORDER_MULTIPLICATIVE) || '0';
-      var code = arg1 + ' % ' + arg2;
-      return [code, Blockly.Python.ORDER_MULTIPLICATIVE];
-    };
-
-    Blockly.Python.forBlock['math_constrain'] = function(block) {
-      var arg = Blockly.Python.valueToCode(block, 'VALUE', Blockly.Python.ORDER_NONE) || '0';
-      var low = Blockly.Python.valueToCode(block, 'LOW', Blockly.Python.ORDER_NONE) || '0';
-      var high = Blockly.Python.valueToCode(block, 'HIGH', Blockly.Python.ORDER_NONE) || '0';
-      var code = 'min(max(' + arg + ', ' + low + '), ' + high + ')';
-      return [code, Blockly.Python.ORDER_FUNCTION_CALL];
-    };
-
-    Blockly.Python.forBlock['math_random_int'] = function(block) {
-      var arg1 = Blockly.Python.valueToCode(block, 'FROM', Blockly.Python.ORDER_NONE) || '0';
-      var arg2 = Blockly.Python.valueToCode(block, 'TO', Blockly.Python.ORDER_NONE) || '0';
-      Blockly.Python.definitions_['import_random'] = 'import random';
-      var code = 'random.randint(' + arg1 + ', ' + arg2 + ')';
-      return [code, Blockly.Python.ORDER_FUNCTION_CALL];
-    };
-
-    Blockly.Python.forBlock['math_random_float'] = function(block) {
-      Blockly.Python.definitions_['import_random'] = 'import random';
-      return ['random.random()', Blockly.Python.ORDER_FUNCTION_CALL];
-    };
-
-    Blockly.Python.forBlock['math_atan2'] = function(block) {
-      var arg1 = Blockly.Python.valueToCode(block, 'X', Blockly.Python.ORDER_NONE) || '0';
-      var arg2 = Blockly.Python.valueToCode(block, 'Y', Blockly.Python.ORDER_NONE) || '0';
-      Blockly.Python.definitions_['import_math'] = 'import math';
-      var code = 'math.atan2(' + arg2 + ', ' + arg1 + ')';
-      return [code, Blockly.Python.ORDER_FUNCTION_CALL];
-    };
-
-    // Text blocks
-    Blockly.Python.forBlock['text'] = function(block) {
-      var code = Blockly.Python.quote_(block.getFieldValue('TEXT'));
-      return [code, Blockly.Python.ORDER_ATOMIC];
-    };
-
-    Blockly.Python.forBlock['text_print'] = function(block) {
-      var msg = Blockly.Python.valueToCode(block, 'TEXT', Blockly.Python.ORDER_NONE) || '""';
-      return 'print(' + msg + ')\n';
-    };
-
-    Blockly.Python.forBlock['text_join'] = function(block) {
-      if (block.itemCount_ === 0) {
-        return ['\'\'', Blockly.Python.ORDER_ATOMIC];
-      } else if (block.itemCount_ === 1) {
-        var element = Blockly.Python.valueToCode(block, 'ADD0', Blockly.Python.ORDER_NONE) || '\'\'';
-        return ['str(' + element + ')', Blockly.Python.ORDER_FUNCTION_CALL];
-      } else {
-        var elements = [];
-        for (var i = 0; i < block.itemCount_; i++) {
-          elements[i] = Blockly.Python.valueToCode(block, 'ADD' + i, Blockly.Python.ORDER_NONE) || '\'\'';
-        }
-        return ['str(' + elements.join(') + str(') + ')', Blockly.Python.ORDER_FUNCTION_CALL];
-      }
-    };
-
-    // Variables
-    Blockly.Python.forBlock['variables_get'] = function(block) {
-      var code = Blockly.Python.nameDB_.getName(block.getFieldValue('VAR'), Blockly.VARIABLE_CATEGORY_NAME);
-      return [code, Blockly.Python.ORDER_ATOMIC];
-    };
-
-    Blockly.Python.forBlock['variables_set'] = function(block) {
-      var argument0 = Blockly.Python.valueToCode(block, 'VALUE', Blockly.Python.ORDER_NONE) || '0';
-      var varName = Blockly.Python.nameDB_.getName(block.getFieldValue('VAR'), Blockly.VARIABLE_CATEGORY_NAME);
-      return varName + ' = ' + argument0 + '\n';
-    };
-
-    // Lists
-    Blockly.Python.forBlock['lists_create_with'] = function(block) {
-      var elements = new Array(block.itemCount_);
-      for (var i = 0; i < block.itemCount_; i++) {
-        elements[i] = Blockly.Python.valueToCode(block, 'ADD' + i, Blockly.Python.ORDER_NONE) || 'None';
-      }
-      return ['[' + elements.join(', ') + ']', Blockly.Python.ORDER_ATOMIC];
-    };
-
-    // Set PASS for empty blocks
-    Blockly.Python.PASS = '    pass\n';
+    // Note: JavaScript and Python code generators have been moved to separate files:
+    // - javascript-generator.js
+    // - python-generator.js
 
     // ========== Workspace ==========
     window.workspace = Blockly.inject('blocklyDiv', {
@@ -2174,6 +1231,9 @@
       trashcan: true,
       move: { scrollbars: true, drag: true, wheel: true }
     });
+
+    // Note: Python generators have been moved to python-generator.js
+    // Note: JavaScript generators have been moved to javascript-generator.js
 
     // Function to update code output based on selected language (made global)
     window.updateCodeOutput = function() {
@@ -2228,6 +1288,10 @@
     window.workspace.addChangeListener(function() {
       updateCodeOutput();
     });
+
+    // NOTE: Python generator code moved to python-generator.js
+    // NOTE: JavaScript generator code moved to javascript-generator.js
+
 
     // ========== Block Value Preview ==========
     window.workspace.addChangeListener(function(event) {
@@ -3478,503 +2542,32 @@
       return parts;
     }
 
-    // ========== JS to Blockly Tests ==========
-    function testJsToBlocks() {
-      var tests = [
-        {
-          name: 'Simple function call',
-          code: 'Robot.setDegrees(17, 0);',
-          expected: 'set_degrees'
-        },
-        {
-          name: 'Variable declaration',
-          code: 'let x = 100;',
-          expected: 'variables_set'
-        },
-        {
-          name: 'Function call with variable',
-          code: 'let deg = Robot.getDegrees(17);',
-          expected: 'variables_set'
-        },
-        {
-          name: 'For loop',
-          code: 'for (let i = 0; i < 5; i++) { logConsole("test"); }',
-          expected: 'controls_for'
-        },
-        {
-          name: 'String concatenation',
-          code: 'logConsole("Value: " + x);',
-          expected: 'log'
-        },
-        {
-          name: 'If statement',
-          code: 'if (x > 10) { logConsole("big"); }',
-          expected: 'controls_if'
-        },
-        {
-          name: 'Array literal',
-          code: 'let arr = [1, 2, 3];',
-          expected: 'variables_set'
-        },
-        {
-          name: 'Multiple statements',
-          code: 'Robot.setDegrees(17, 0);\nwait(1);\nlogConsole("done");',
-          expected: 'set_degrees'
-        }
-      ];
+    // ========== Expose to Global Scope ==========
+    // For AI Assistant
+    window.jsToBlocks = jsToBlocks;
+    window.blocklyWorkspace = window.workspace;
 
-      var results = [];
-      for (var i = 0; i < tests.length; i++) {
-        var test = tests[i];
-        workspace.clear();
-        var result = jsToBlocks(test.code);
-        var blocks = workspace.getAllBlocks();
-        var passed = result.success && blocks.length > 0;
+    // For HTML onclick handlers
+    window.toggleConnection = toggleConnection;
+    window.checkMotors = checkMotors;
+    window.enableAllTorque = enableAllTorque;
+    window.disableAllTorque = disableAllTorque;
+    window.rebootAllMotors = rebootAllMotors;
+    window.runCode = runCode;
+    window.stopCode = stopCode;
+    window.saveWorkspace = saveWorkspace;
+    window.loadWorkspace = loadWorkspace;
+    window.switchTab = switchTab;
+    window.updateCodeOutput = updateCodeOutput;
+    window.logConsole = logConsole;
+    window.Robot = Robot;
+    window.wait = wait;
+    window.sleep = sleep;
+}
 
-        results.push({
-          name: test.name,
-          passed: passed,
-          error: result.error,
-          blockCount: blocks.length,
-          firstBlockType: blocks.length > 0 ? blocks[0].type : null
-        });
-
-        logConsole((passed ? '✓' : '✗') + ' ' + test.name + (result.error ? ': ' + result.error : ''), passed ? 'success' : 'error');
-      }
-
-      workspace.clear();
-      return results;
-    }
-
-    // Run tests with: testJsToBlocks()
-    // Available in console
-
-    // ========== AI Assistant ==========
-    var aiSettings = {
-      provider: 'anthropic',
-      endpoint: 'http://localhost:11434',
-      apiKey: '',
-      model: 'claude-sonnet-4-20250514'
-    };
-
-    // Load settings from localStorage
-    var savedAISettings = localStorage.getItem('aiSettings');
-    if (savedAISettings) {
-      try {
-        aiSettings = JSON.parse(savedAISettings);
-        document.getElementById('aiProviderSelect').value = aiSettings.provider;
-      } catch (e) {}
-    }
-
-    var aiChatHistory = [];
-
-    function openAISettings() {
-      document.getElementById('settingsProvider').value = aiSettings.provider;
-      document.getElementById('settingsEndpoint').value = aiSettings.endpoint;
-      document.getElementById('settingsApiKey').value = aiSettings.apiKey;
-      document.getElementById('settingsModel').value = aiSettings.model;
-      updateSettingsUI();
-      document.getElementById('aiSettingsModal').classList.add('show');
-    }
-
-    function closeAISettings() {
-      document.getElementById('aiSettingsModal').classList.remove('show');
-    }
-
-    function updateSettingsUI() {
-      var provider = document.getElementById('settingsProvider').value;
-      var endpointGroup = document.getElementById('endpointGroup');
-      var apiKeyGroup = document.getElementById('apiKeyGroup');
-      var modelInput = document.getElementById('settingsModel');
-
-      if (provider === 'ollama') {
-        endpointGroup.style.display = 'block';
-        apiKeyGroup.style.display = 'none';
-        document.getElementById('settingsEndpoint').placeholder = 'http://localhost:11434';
-        modelInput.placeholder = 'llama3.2';
-      } else if (provider === 'openai') {
-        endpointGroup.style.display = 'none';
-        apiKeyGroup.style.display = 'block';
-        modelInput.placeholder = 'gpt-4o';
-      } else if (provider === 'anthropic') {
-        endpointGroup.style.display = 'none';
-        apiKeyGroup.style.display = 'block';
-        modelInput.placeholder = 'claude-sonnet-4-20250514';
-      }
-    }
-
-    function saveAISettings() {
-      aiSettings.provider = document.getElementById('settingsProvider').value;
-      aiSettings.endpoint = document.getElementById('settingsEndpoint').value;
-      aiSettings.apiKey = document.getElementById('settingsApiKey').value;
-      aiSettings.model = document.getElementById('settingsModel').value;
-      localStorage.setItem('aiSettings', JSON.stringify(aiSettings));
-      document.getElementById('aiProviderSelect').value = aiSettings.provider;
-      closeAISettings();
-      addAIMessage('Settings saved!', 'system');
-    }
-
-    // Sync dropdown with settings
-    document.getElementById('aiProviderSelect').addEventListener('change', function() {
-      aiSettings.provider = this.value;
-      localStorage.setItem('aiSettings', JSON.stringify(aiSettings));
-    });
-
-    function addAIMessage(content, type) {
-      var chat = document.getElementById('aiChat');
-      var msg = document.createElement('div');
-      msg.className = 'ai-message ' + type;
-      msg.textContent = content;
-      chat.appendChild(msg);
-      chat.scrollTop = chat.scrollHeight;
-    }
-
-    function addAICodeMessage(code) {
-      var chat = document.getElementById('aiChat');
-      var msg = document.createElement('div');
-      msg.className = 'ai-message code';
-      msg.textContent = code;
-      chat.appendChild(msg);
-      chat.scrollTop = chat.scrollHeight;
-    }
-
-    function getWorkspaceContext() {
-      // Get current blocks as XML
-      var xml = Blockly.Xml.workspaceToDom(workspace);
-      var xmlText = Blockly.Xml.domToText(xml);
-
-      // Get generated code
-      var code = Blockly.JavaScript.workspaceToCode(workspace);
-
-      // Get available block types
-      var availableBlocks = [
-        'Connection: enable_torque, disable_torque, enable_all, disable_all, check_joints, ping_joint, reboot_joint, reboot_all',
-        'Antennas (motors 17-18): set_degrees, get_degrees, move_by',
-        'Head (coordinate control): get_head_coordinates, set_head_coordinates',
-        'Coordinates: create_coordinates, get_coordinate',
-        'Sensing: is_moving, wait_until_stopped, get_load, get_temperature, joint_in_range',
-        'Timing: wait, wait_ms, get_time, reset_timer, timer_value',
-        'Output: log, log_joint, log_type, alert',
-        'Blockly built-ins: controls_if, controls_repeat_ext, controls_whileUntil, controls_for, logic_compare, logic_operation, math_number, math_arithmetic, text, lists_create_with, variables_get, variables_set'
-      ];
-
-      return {
-        xml: xmlText,
-        code: code,
-        availableBlocks: availableBlocks.join('\n')
-      };
-    }
-
-    async function sendAIMessage() {
-      var input = document.getElementById('aiInput');
-      var userMessage = input.value.trim();
-      if (!userMessage) return;
-
-      input.value = '';
-      addAIMessage(userMessage, 'user');
-
-      var sendBtn = document.getElementById('aiSendBtn');
-      sendBtn.disabled = true;
-      sendBtn.textContent = '...';
-
-      // Show thinking animation
-      var thinkingEl = document.createElement('div');
-      thinkingEl.className = 'ai-thinking';
-      thinkingEl.innerHTML = '<div class="ai-thinking-dots"><span></span><span></span><span></span></div><span>Thinking...</span>';
-      var chat = document.getElementById('aiChat');
-      chat.appendChild(thinkingEl);
-      chat.scrollTop = chat.scrollHeight;
-
-      try {
-        var context = getWorkspaceContext();
-        var systemPrompt = 'You are an AI assistant helping users program a robot called Reachy Mini using JavaScript. ' +
-          'The code you write will be converted to visual Blockly blocks, so you MUST use only supported syntax.\n\n' +
-          'ROBOT ARCHITECTURE:\n' +
-          'Reachy Mini has two separate control systems:\n\n' +
-          '1. HEAD (motors 11-16): Stewart Platform with 6DOF (x, y, z, roll, pitch, yaw)\n' +
-          '   - ALWAYS use coordinate-based control, NEVER control individual head motors!\n' +
-          '   - Kinematics conversion happens automatically behind the scenes\n' +
-          '   - Coordinates: [x, y, z, roll, pitch, yaw]\n' +
-          '     * Position in millimeters:\n' +
-          '       - X: forward (+) / backward (-)\n' +
-          '       - Y: right (+) / left (-)\n' +
-          '       - Z: up (+) / down (-), where Z=0 is neutral position\n' +
-          '     * Rotation in degrees:\n' +
-          '       - Roll: tilt left/right (rotate around X axis)\n' +
-          '       - Pitch: nod up/down (rotate around Y axis)\n' +
-          '       - Yaw: turn left/right (rotate around Z axis)\n' +
-          '     * Example: [0, 0, 0, 0, 0, 0] = neutral position with no rotation\n' +
-          '     * Example: [10, 0, 0, 0, 0, 0] = move forward 10mm\n' +
-          '     * Example: [0, 5, 0, 0, 0, 0] = move right 5mm\n' +
-          '     * Example: [0, 0, -10, 0, 0, 0] = move down 10mm\n\n' +
-          '2. ANTENNAS (motors 17-18): Independent motors that can be controlled directly\n' +
-          '   - Motor 17: Left antenna\n' +
-          '   - Motor 18: Right antenna\n' +
-          '   - Control using degrees (angle position)\n\n' +
-          'AVAILABLE FUNCTIONS:\n\n' +
-          'HEAD CONTROL (coordinate-based only):\n' +
-          '- await Robot.setHeadCoordinates(coords) - set head to coordinates [x, y, z, roll, pitch, yaw]\n' +
-          '  ALWAYS create coordinates inline like: [x, y, z, roll, pitch, yaw]\n' +
-          '  Example: await Robot.setHeadCoordinates([0, 0, -10, 0, 0, 0]);\n' +
-          '  This converts to the "create coordinates" block with labeled fields for children\n' +
-          '- await Robot.getHeadCoordinates() - get current head coordinates\n' +
-          '  Returns [x, y, z, roll, pitch, yaw]\n' +
-          '- To modify coordinates, store in variable first:\n' +
-          '  var coords = [x, y, z, roll, pitch, yaw];\n' +
-          '  coords[2] = -10; // change z\n' +
-          '  await Robot.setHeadCoordinates(coords);\n\n' +
-          'ANTENNA CONTROL (direct motor control):\n' +
-          '- Robot.setDegrees(motor, degrees) - set antenna angle in degrees\n' +
-          '- Robot.getDegrees(motor) - get antenna angle in degrees\n' +
-          '- Motors: 17 = left antenna, 18 = right antenna\n\n' +
-          'TORQUE (enable/disable motors):\n' +
-          '- Robot.setTorque(motor, true/false) - enable/disable single motor (11-18)\n' +
-          '- Robot.setTorqueMultiple([11,12,13,14,15,16], true/false) - enable/disable all head motors\n' +
-          '- Robot.setTorqueMultiple([11,12,13,14,15,16,17,18], true/false) - enable/disable all motors (head + antennas)\n\n' +
-          'STATUS & DIAGNOSTICS:\n' +
-          '- Robot.checkAllMotors() - check all motors (11-18)\n' +
-          '- Robot.ping(motor) - ping single motor\n' +
-          '- Robot.reboot(motor) - reboot single motor\n' +
-          '- Robot.rebootAll() - reboot all motors (11-18)\n\n' +
-          'SENSING (works with any motor 11-18):\n' +
-          '- Robot.isMoving(motor) - check if motor is moving\n' +
-          '- Robot.getLoad(motor) - get load/torque (-100 to 100)\n' +
-          '- Robot.getTemperature(motor) - get motor temperature\n\n' +
-          'TIMING:\n' +
-          '- wait(seconds) - wait N seconds (use this for delays!)\n' +
-          '- sleep(ms) - wait N milliseconds\n' +
-          '- Date.now() - get current time in milliseconds since epoch\n' +
-          '  To get current seconds: Math.floor((Date.now() / 1000) % 60)\n' +
-          '  To get current minutes: Math.floor((Date.now() / 60000) % 60)\n' +
-          '  To get current hours: Math.floor((Date.now() / 3600000) % 24)\n\n' +
-          'OUTPUT:\n' +
-          '- logConsole(message) - log message to console\n' +
-          '- logJoint(motor) - log joint position\n' +
-          '- alert(message) - show alert dialog\n\n' +
-          'SUPPORTED SYNTAX (use only these!):\n' +
-          '- var/let variable declarations: var x = 10;\n' +
-          '- for loops: for (var i = 0; i < 10; i++) { ... }\n' +
-          '- while loops: while (x < 100) { ... }\n' +
-          '- if/else statements: if (x > 10) { ... } else { ... }\n' +
-          '- Math operators: +, -, *, /, %\n' +
-          '- Math functions: Math.floor(), Math.ceil(), Math.round(), Math.abs(), Math.sqrt()\n' +
-          '- Trigonometry - ALL ANGLES ARE IN DEGREES! Keep all angle variables in degrees.\n' +
-          '  To use cos/sin/tan, inline the degree-to-radian conversion DIRECTLY in the function call:\n' +
-          '    Math.cos(angleDegrees * Math.PI / 180)\n' +
-          '    Math.sin(angleDegrees * Math.PI / 180)\n' +
-          '    Math.tan(angleDegrees * Math.PI / 180)\n' +
-          '  Example: var angle = 90; var x = 10 * Math.cos(angle * Math.PI / 180);\n' +
-          '  NEVER create a separate radian variable! Keep everything in degrees!\n' +
-          '  WRONG: var angleRad = angle * Math.PI / 180; var x = Math.cos(angleRad);\n' +
-          '  CORRECT: var x = Math.cos(angle * Math.PI / 180);\n' +
-          '  Inverse functions return radians, convert to degrees inline:\n' +
-          '    Math.asin(x) * 180 / Math.PI, Math.acos(x) * 180 / Math.PI, Math.atan(x) * 180 / Math.PI\n' +
-          '- Math constants: Math.PI (represents 180 degrees, use Math.PI / 180 to convert degrees to radians)\n' +
-          '- Comparisons: <, >, <=, >=, ==, !=\n' +
-          '- Logic: &&, ||, !\n' +
-          '- String concatenation: "text " + variable\n' +
-          '- Arrays: [1, 2, 3], arr.length, arr[i], arr[i] = value\n\n' +
-          'NEVER USE THESE (will break the converter!):\n' +
-          '- function declarations (NEVER write "function myFunc() {}" - inline the code instead!)\n' +
-          '- setTimeout, setInterval (use for/while loops with wait() instead)\n' +
-          '- arrow functions (no () => {})\n' +
-          '- new Date(), date.getSeconds() etc. (use Date.now() with math instead - see TIMING section)\n' +
-          '- template literals (no `${var}`)\n' +
-          '- console.log (use logConsole instead)\n' +
-          '- JSON.stringify\n' +
-          '- callbacks or closures\n\n' +
-          'NOTE: You can use "await" with Robot functions - it will be automatically stripped during conversion.\n\n' +
-          'EXAMPLE 1 - Move head down and back to neutral:\n' +
-          'Robot.setTorqueMultiple([11,12,13,14,15,16], true);\n' +
-          'for (var i = 0; i < 3; i++) {\n' +
-          '  await Robot.setHeadCoordinates([0, 0, -10, 0, 0, 0]);\n' +
-          '  wait(0.5);\n' +
-          '  await Robot.setHeadCoordinates([0, 0, 0, 0, 0, 0]);\n' +
-          '  wait(0.5);\n' +
-          '}\n\n' +
-          'EXAMPLE 2 - Move antennas back and forth:\n' +
-          'Robot.setTorqueMultiple([17,18], true);\n' +
-          'for (var i = 0; i < 3; i++) {\n' +
-          '  Robot.setDegrees(17, 45);\n' +
-          '  Robot.setDegrees(18, -45);\n' +
-          '  wait(0.5);\n' +
-          '  Robot.setDegrees(17, -45);\n' +
-          '  Robot.setDegrees(18, 45);\n' +
-          '  wait(0.5);\n' +
-          '}\n\n' +
-          'Current workspace code:\n' + context.code + '\n\n' +
-          'IMPORTANT: Always respond with working JavaScript code in a ```javascript``` code block. Keep it simple and use only supported syntax.';
-
-        aiChatHistory.push({ role: 'user', content: userMessage });
-        var response = await callLLM(systemPrompt, aiChatHistory);
-        aiChatHistory.push({ role: 'assistant', content: response });
-
-        // Check if response contains JavaScript code
-        var jsMatch = response.match(/```javascript\s*([\s\S]*?)```/) || response.match(/```js\s*([\s\S]*?)```/) || response.match(/```\s*([\s\S]*?)```/);
-        if (jsMatch) {
-          var jsCode = jsMatch[1].trim();
-
-          // Show the generated code
-          addAIMessage('Generated code:', 'assistant');
-          addAICodeMessage(jsCode);
-
-          var result = jsToBlocks(jsCode);
-
-          if (result.success) {
-            addAIMessage('✓ Workspace updated!', 'assistant');
-            var explanation = response.replace(/```[\s\S]*?```/g, '').trim();
-            if (explanation) {
-              addAIMessage(explanation, 'assistant');
-            }
-          } else {
-            // Send error back to AI for retry
-            addAIMessage('Parse error: ' + result.error, 'error');
-            addAIMessage('Asking AI to fix...', 'system');
-            var errorMsg = 'Your JavaScript had an error: ' + result.error + '\n\nPlease fix the code. Use only the allowed functions: Robot.setDegrees(), Robot.getDegrees(), Robot.setTorque(), Robot.setTorqueMultiple(), logConsole(), wait(), etc. For head control, use coordinate arrays [x,y,z,roll,pitch,yaw].';
-            aiChatHistory.push({ role: 'user', content: errorMsg });
-
-            var retryResponse = await callLLM(systemPrompt, aiChatHistory);
-            aiChatHistory.push({ role: 'assistant', content: retryResponse });
-
-            var retryMatch = retryResponse.match(/```javascript\s*([\s\S]*?)```/) || retryResponse.match(/```js\s*([\s\S]*?)```/) || retryResponse.match(/```\s*([\s\S]*?)```/);
-            if (retryMatch) {
-              var retryCode = retryMatch[1].trim();
-              addAIMessage('Retry code:', 'assistant');
-              addAICodeMessage(retryCode);
-
-              var retryResult = jsToBlocks(retryCode);
-              if (retryResult.success) {
-                addAIMessage('✓ Workspace updated!', 'assistant');
-              } else {
-                addAIMessage('Still could not parse: ' + retryResult.error, 'error');
-              }
-            } else {
-              addAIMessage(retryResponse, 'assistant');
-            }
-          }
-        } else {
-          addAIMessage(response, 'assistant');
-        }
-      } catch (e) {
-        addAIMessage('Error: ' + e.message, 'error');
-      } finally {
-        // Remove thinking animation
-        if (thinkingEl && thinkingEl.parentNode) {
-          thinkingEl.parentNode.removeChild(thinkingEl);
-        }
-        sendBtn.disabled = false;
-        sendBtn.textContent = 'Send';
-      }
-    }
-
-    async function callLLM(systemPrompt, messages) {
-      var provider = aiSettings.provider;
-
-      if (provider === 'ollama') {
-        return await callOllama(systemPrompt, messages);
-      } else if (provider === 'openai') {
-        return await callOpenAI(systemPrompt, messages);
-      } else if (provider === 'anthropic') {
-        return await callAnthropic(systemPrompt, messages);
-      }
-      throw new Error('Unknown provider: ' + provider);
-    }
-
-    async function callOllama(systemPrompt, messages) {
-      var endpoint = aiSettings.endpoint || 'http://localhost:11434';
-      var model = aiSettings.model || 'llama3.2';
-
-      var ollamaMessages = [{ role: 'system', content: systemPrompt }];
-      messages.forEach(function(m) {
-        ollamaMessages.push({ role: m.role, content: m.content });
-      });
-
-      var response = await fetch(endpoint + '/api/chat', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          model: model,
-          messages: ollamaMessages,
-          stream: false
-        })
-      });
-
-      if (!response.ok) {
-        throw new Error('Ollama error: ' + response.status);
-      }
-
-      var data = await response.json();
-      return data.message.content;
-    }
-
-    async function callOpenAI(systemPrompt, messages) {
-      var model = aiSettings.model || 'gpt-4o';
-      var apiKey = aiSettings.apiKey;
-
-      if (!apiKey) {
-        throw new Error('OpenAI API key not configured. Click Settings to add it.');
-      }
-
-      var openaiMessages = [{ role: 'system', content: systemPrompt }];
-      messages.forEach(function(m) {
-        openaiMessages.push({ role: m.role, content: m.content });
-      });
-
-      var response = await fetch('https://api.openai.com/v1/chat/completions', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': 'Bearer ' + apiKey
-        },
-        body: JSON.stringify({
-          model: model,
-          messages: openaiMessages
-        })
-      });
-
-      if (!response.ok) {
-        var errorData = await response.json();
-        throw new Error('OpenAI error: ' + (errorData.error?.message || response.status));
-      }
-
-      var data = await response.json();
-      return data.choices[0].message.content;
-    }
-
-    async function callAnthropic(systemPrompt, messages) {
-      var model = aiSettings.model || 'claude-sonnet-4-20250514';
-      var apiKey = aiSettings.apiKey;
-
-      if (!apiKey) {
-        throw new Error('Anthropic API key not configured. Click Settings to add it.');
-      }
-
-      // Anthropic format: system is separate, messages alternate user/assistant
-      var anthropicMessages = messages.map(function(m) {
-        return { role: m.role, content: m.content };
-      });
-
-      var response = await fetch('https://api.anthropic.com/v1/messages', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-api-key': apiKey,
-          'anthropic-version': '2023-06-01',
-          'anthropic-dangerous-direct-browser-access': 'true'
-        },
-        body: JSON.stringify({
-          model: model,
-          max_tokens: 4096,
-          system: systemPrompt,
-          messages: anthropicMessages
-        })
-      });
-
-      if (!response.ok) {
-        var errorData = await response.json();
-        throw new Error('Anthropic error: ' + (errorData.error?.message || response.status));
-      }
-
-      var data = await response.json();
-      return data.content[0].text;
-    }
+// Initialize when WASM is ready, or immediately if already loaded
+if (window.wasm) {
+    initBlocklyApp();
+} else {
+    window.addEventListener('wasm-ready', initBlocklyApp);
+}
