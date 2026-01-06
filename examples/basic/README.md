@@ -53,7 +53,7 @@ A simple, **standalone** single-file HTML example demonstrating core Reachy Mini
 The example loads `reachy-mini` directly from unpkg CDN:
 
 ```javascript
-import init, { ... } from 'https://unpkg.com/reachy-mini@0.2.0';
+import init, { ... } from 'https://unpkg.com/reachy-mini@0.5.2/index.js';
 ```
 
 No build tools, no npm install, just one HTML file!

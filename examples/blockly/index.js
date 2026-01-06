@@ -45,7 +45,7 @@ import init, {
   // Motor diagnostics - check and reboot
   get_motor_errors,
   check_and_reboot_motors,
-} from 'https://unpkg.com/reachy-mini@0.4.0/reachy_mini.js';
+} from 'https://unpkg.com/reachy-mini@0.5.2/index.js';
 
 // ============ Serial Port Helpers (required by WASM for WebSerial fallback) ============
 let cachedPort = null;
@@ -135,7 +135,7 @@ window.wasm = {
 window.forward_kinematics = forward_kinematics;
 window.inverse_kinematics = inverse_kinematics;
 
-console.log('WASM module loaded (reachy-mini v0.4.0)');
+console.log('WASM module loaded (reachy-mini v0.5.1)');
 
 // Dispatch event to signal WASM is ready
 window.dispatchEvent(new CustomEvent('wasm-ready'));

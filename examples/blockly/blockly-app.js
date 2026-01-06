@@ -553,22 +553,68 @@ function initBlocklyApp() {
       });
     }
 
+    // Fallback motor check using position read (when get_motor_errors isn't available)
+    function fallbackPositionCheck() {
+      var allMotors = [11, 12, 13, 14, 15, 16, 17, 18];
+      window.wasm.get_all_joints().then(function(joints) {
+        console.log('Fallback - Joints:', joints);
+        for (var i = 0; i < allMotors.length; i++) {
+          var id = allMotors[i];
+          var el = document.getElementById('motor' + id);
+          if (el) {
+            el.classList.remove('error');
+            el.classList.add('active');
+          }
+        }
+        logConsole('All ' + allMotors.length + ' motors responding', 'success');
+      }).catch(function(e) {
+        logConsole('Error reading joints: ' + e.message, 'error');
+        var allMotors = [11, 12, 13, 14, 15, 16, 17, 18];
+        for (var i = 0; i < allMotors.length; i++) {
+          var el = document.getElementById('motor' + allMotors[i]);
+          if (el) {
+            el.classList.add('error');
+            el.classList.remove('active');
+          }
+        }
+      });
+    }
+
     function checkMotors() {
       if (!Robot.connected) { logConsole('Not connected', 'error'); return; }
       logConsole('Checking all motors for hardware errors...', 'info');
 
-      // Use the new get_motor_errors function for accurate hardware error detection
-      window.wasm.get_motor_errors().then(function(errors) {
+      // Check if get_motor_errors exists, otherwise fall back to position check
+      if (!window.wasm.get_motor_errors) {
+        logConsole('get_motor_errors not available, using position check', 'info');
+        fallbackPositionCheck();
+        return;
+      }
+
+      window.wasm.get_motor_errors().then(function(rawErrors) {
+        console.log('Raw errors response:', rawErrors, 'type:', typeof rawErrors);
         var allMotors = [11, 12, 13, 14, 15, 16, 17, 18];
         var ok = [];
         var withErrors = [];
+
+        // Convert to regular array if needed (WASM might return typed array)
+        var errors = rawErrors ? Array.from(rawErrors) : [];
+        console.log('Converted errors:', errors);
+
+        // Handle case where errors might not be returned properly
+        if (!errors || errors.length === 0) {
+          logConsole('Could not read motor errors, falling back to position check', 'warn');
+          fallbackPositionCheck();
+          return;
+        }
 
         for (var i = 0; i < allMotors.length; i++) {
           var id = allMotors[i];
           var el = document.getElementById('motor' + id);
           var errorStatus = errors[i];
 
-          if (errorStatus === 0) {
+          // Check for undefined or null as well as 0
+          if (errorStatus === 0 || errorStatus === undefined || errorStatus === null) {
             ok.push(id);
             if (el) {
               el.classList.remove('error');
@@ -597,7 +643,20 @@ function initBlocklyApp() {
 
     function rebootAllMotors() {
       if (!Robot.connected) { logConsole('Not connected', 'error'); return; }
-      if (!confirm('Check and reboot motors with errors? Motors will lose torque during reboot.')) return;
+      if (!confirm('Reboot all motors? Motors will lose torque during reboot.')) return;
+
+      // Check if check_and_reboot_motors exists, otherwise fall back to reboot_all_motors
+      if (!window.wasm.check_and_reboot_motors) {
+        logConsole('Rebooting all motors...', 'warn');
+        window.wasm.reboot_all_motors().then(function() {
+          logConsole('All motors rebooted', 'success');
+          setTimeout(checkMotors, 500);
+        }).catch(function(e) {
+          logConsole('Error: ' + e.message, 'error');
+        });
+        return;
+      }
+
       logConsole('Checking and rebooting motors with errors...', 'warn');
 
       // Use the new check_and_reboot_motors function

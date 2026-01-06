@@ -24,6 +24,7 @@ pub const BROADCAST_ID: u8 = 0xFE;
 /// XL330 control table addresses
 pub mod address {
     pub const TORQUE_ENABLE: u16 = 64;
+    pub const HARDWARE_ERROR_STATUS: u16 = 70;
     pub const GOAL_POSITION: u16 = 116;
     pub const PRESENT_LOAD: u16 = 126;
     pub const PRESENT_POSITION: u16 = 132;
@@ -255,6 +256,18 @@ pub fn build_sync_read_load(motor_ids: &[u8]) -> Vec<u8> {
         .build()
 }
 
+/// Build SYNC_READ for hardware error status from multiple motors.
+pub fn build_sync_read_hardware_error(motor_ids: &[u8]) -> Vec<u8> {
+    let param_len = 4 + motor_ids.len() as u16;
+
+    PacketBuilder::new(BROADCAST_ID, 14 + motor_ids.len())
+        .instruction(instruction::SYNC_READ, param_len)
+        .u16_le(address::HARDWARE_ERROR_STATUS)
+        .u16_le(1)
+        .bytes(motor_ids)
+        .build()
+}
+
 // ============================================================================
 // Packet Parsing
 // ============================================================================
@@ -457,6 +470,44 @@ pub fn parse_1byte_packets(data: &[u8]) -> Vec<(u8, u8)> {
 
         let error = slice[8];
         if error != 0 {
+            continue;
+        }
+
+        let motor_id = slice[4];
+        let value = slice[9];
+
+        results.push((motor_id, value));
+    }
+
+    results
+}
+
+/// Parse all 1-byte status packets including those with motor errors.
+///
+/// Unlike `parse_1byte_packets`, this function includes packets where
+/// the motor reported an error. This is useful for reading the Hardware
+/// Error Status register.
+///
+/// # Returns
+/// Vector of (motor_id, value) for each packet found.
+pub fn parse_1byte_packets_with_errors(data: &[u8]) -> Vec<(u8, u8)> {
+    let mut results = Vec::new();
+
+    for offset in find_packet_headers(data) {
+        // Need at least 12 bytes for a 1-byte status packet
+        if offset + 12 > data.len() {
+            continue;
+        }
+
+        let slice = &data[offset..];
+
+        if slice[7] != instruction::STATUS {
+            continue;
+        }
+
+        // Length = 5 for 1-byte data (instr + err + data + crc)
+        let length = u16::from_le_bytes([slice[5], slice[6]]);
+        if length != 5 {
             continue;
         }
 

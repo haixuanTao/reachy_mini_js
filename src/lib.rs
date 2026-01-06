@@ -38,10 +38,10 @@ use std::sync::{Arc, Mutex};
 
 use crate::dynamixel::{
     address, build_read_packet, build_reboot_packet, build_sync_current_position,
-    build_sync_read_load, build_sync_read_temperature, build_sync_write_position_radians,
-    build_sync_write_torque, parse_1byte_packets, parse_2byte_signed_packets,
-    parse_position_packets, parse_status_packet_1byte, parse_status_packet_2byte_signed,
-    raw_to_radians,
+    build_sync_read_hardware_error, build_sync_read_load, build_sync_read_temperature,
+    build_sync_write_position_radians, build_sync_write_torque, parse_1byte_packets,
+    parse_2byte_signed_packets, parse_position_packets, parse_status_packet_1byte,
+    parse_status_packet_2byte_signed, raw_to_radians,
 };
 use crate::kinematics::Kinematics;
 
@@ -179,8 +179,15 @@ pub fn main_js() -> Result<(), JsValue> {
 /// Connect to the Reachy Mini robot.
 ///
 /// Attempts to establish a connection in the following order:
-/// 1. WebSocket connection to `ws://localhost:8000/api/move/ws/raw/write`
+/// 1. WebSocket connection (to provided address or default)
 /// 2. WebSerial connection (prompts user to select a serial port)
+///
+/// # Arguments
+/// * `address` - Optional WebSocket address. Can be:
+///   - Full URL: `ws://192.168.1.100:8000/api/move/ws/raw/write`
+///   - IP with port: `192.168.1.100:8000`
+///   - IP only: `192.168.1.100` (uses default port 8000)
+///   - `None` to use default address
 ///
 /// # Returns
 /// * `Ok(true)` - Successfully connected
@@ -188,11 +195,21 @@ pub fn main_js() -> Result<(), JsValue> {
 ///
 /// # Example
 /// ```javascript
+/// // Connect with default address
 /// await connect();
+///
+/// // Connect to specific IP
+/// await connect("192.168.1.100");
+///
+/// // Connect to specific IP and port
+/// await connect("192.168.1.100:9000");
+///
+/// // Connect with full WebSocket URL
+/// await connect("ws://192.168.1.100:8000/api/move/ws/raw/write");
 /// ```
 #[wasm_bindgen]
-pub async fn connect() -> Result<bool, JsValue> {
-    let port = GenericPort::new().await?;
+pub async fn connect(address: Option<String>) -> Result<bool, JsValue> {
+    let port = GenericPort::new(address).await?;
     GENERIC_PORT.with_borrow_mut(|p| *p = Some(Arc::new(port)));
     console::log_1(&JsValue::from_str("Connected to Reachy Mini"));
     Ok(true)
@@ -1013,6 +1030,157 @@ pub async fn reboot_all_motors() -> Result<(), JsValue> {
     Ok(())
 }
 
+/// Get hardware error status for all motors.
+///
+/// Returns a vector of 8 values representing the Hardware Error Status
+/// register for each motor (11-18). A value of 0 means no error.
+///
+/// Hardware Error Status bit meanings:
+/// - Bit 0: Input Voltage Error
+/// - Bit 2: Motor Hall Sensor Error
+/// - Bit 3: Overheating Error
+/// - Bit 4: Motor Encoder Error
+/// - Bit 5: Electrical Shock Error
+/// - Bit 7: Overload Error
+///
+/// # Example
+/// ```javascript
+/// const errors = await get_motor_errors();
+/// errors.forEach((err, i) => {
+///   if (err !== 0) console.log(`Motor ${11 + i} has error: 0x${err.toString(16)}`);
+/// });
+/// ```
+#[wasm_bindgen]
+pub async fn get_motor_errors() -> Result<Vec<u8>, JsValue> {
+    let port = get_port()?;
+    let packet = build_sync_read_hardware_error(&ALL_MOTOR_IDS);
+    let response = port.write_read(&packet, Some(DEFAULT_WAIT_MS)).await?;
+
+    let parsed = parse_1byte_packets(&response);
+
+    // Map by motor ID, default to 0 for missing
+    let mut errors = vec![0u8; 8];
+    for (id, error) in parsed {
+        if id >= 11 && id <= 18 {
+            errors[(id - 11) as usize] = error;
+        }
+    }
+    Ok(errors)
+}
+
+/// Check all motors and reboot any that have hardware errors.
+///
+/// This function reads the Hardware Error Status register from all motors,
+/// identifies which motors have errors, and reboots only those motors.
+///
+/// # Returns
+/// Returns a `CheckAndRebootResult` containing:
+/// - `motors_checked`: Number of motors that responded
+/// - `motors_with_errors`: Array of motor IDs that had errors
+/// - `motors_rebooted`: Array of motor IDs that were rebooted
+/// - `motors_no_response`: Array of motor IDs that didn't respond
+///
+/// # Example
+/// ```javascript
+/// const result = await check_and_reboot_motors();
+/// console.log(`Checked ${result.motors_checked} motors`);
+/// if (result.motors_rebooted.length > 0) {
+///   console.log(`Rebooted motors: ${result.motors_rebooted.join(', ')}`);
+/// }
+/// ```
+#[wasm_bindgen]
+pub async fn check_and_reboot_motors() -> Result<JsValue, JsValue> {
+    let port = get_port()?;
+
+    console::log_1(&JsValue::from_str("Checking motors for hardware errors..."));
+
+    // Use SYNC_READ to get hardware error status from all motors
+    let packet = build_sync_read_hardware_error(&ALL_MOTOR_IDS);
+    let response = port.write_read(&packet, Some(DEFAULT_WAIT_MS)).await?;
+
+    let parsed = parse_1byte_packets(&response);
+
+    // Track which motors responded and which have errors
+    let mut motors_with_errors: Vec<u8> = Vec::new();
+    let mut motors_responded: Vec<u8> = Vec::new();
+
+    for (motor_id, error_status) in parsed {
+        motors_responded.push(motor_id);
+        if error_status != 0 {
+            motors_with_errors.push(motor_id);
+            console::log_1(
+                &format!(
+                    "Motor {} has hardware error: 0x{:02X}",
+                    motor_id, error_status
+                )
+                .into(),
+            );
+        }
+    }
+
+    // Find motors that didn't respond
+    let motors_no_response: Vec<u8> = ALL_MOTOR_IDS
+        .iter()
+        .filter(|id| !motors_responded.contains(id))
+        .copied()
+        .collect();
+
+    if !motors_no_response.is_empty() {
+        console::log_1(
+            &format!("Motors did not respond: {:?}", motors_no_response).into(),
+        );
+    }
+
+    // Reboot motors with errors
+    let mut motors_rebooted: Vec<u8> = Vec::new();
+    for motor_id in &motors_with_errors {
+        console::log_1(&format!("Rebooting motor {}...", motor_id).into());
+        reboot_motor(*motor_id).await?;
+        motors_rebooted.push(*motor_id);
+    }
+
+    if motors_rebooted.is_empty() {
+        console::log_1(&JsValue::from_str("All motors OK, no reboot needed"));
+    } else {
+        console::log_1(
+            &format!("Rebooted {} motor(s): {:?}", motors_rebooted.len(), motors_rebooted).into(),
+        );
+    }
+
+    // Return result as a JS object
+    let result = js_sys::Object::new();
+    let motors_checked = ALL_MOTOR_IDS.len() - motors_no_response.len();
+    js_sys::Reflect::set(
+        &result,
+        &JsValue::from_str("motors_checked"),
+        &JsValue::from(motors_checked as u32),
+    )?;
+
+    let errors_arr = js_sys::Array::new();
+    for id in &motors_with_errors {
+        errors_arr.push(&JsValue::from(*id));
+    }
+    js_sys::Reflect::set(&result, &JsValue::from_str("motors_with_errors"), &errors_arr)?;
+
+    let rebooted_arr = js_sys::Array::new();
+    for id in &motors_rebooted {
+        rebooted_arr.push(&JsValue::from(*id));
+    }
+    js_sys::Reflect::set(&result, &JsValue::from_str("motors_rebooted"), &rebooted_arr)?;
+
+    let no_response_arr = js_sys::Array::new();
+    for id in &motors_no_response {
+        no_response_arr.push(&JsValue::from(*id));
+    }
+    js_sys::Reflect::set(
+        &result,
+        &JsValue::from_str("motors_no_response"),
+        &no_response_arr,
+    )?;
+
+    Ok(result.into())
+}
+
 // ============================================================================
 // Kinematics Utilities (Pure Functions - No Hardware Access)
 // ============================================================================
@@ -1463,16 +1631,63 @@ enum Connection {
     },
 }
 
+/// Default WebSocket port for Reachy Mini
+const DEFAULT_WS_PORT: u16 = 8000;
+
+/// Default WebSocket path for raw motor control
+const DEFAULT_WS_PATH: &str = "/api/move/ws/raw/write";
+
+/// Default IP address (localhost)
+const DEFAULT_WS_HOST: &str = "localhost";
+
 impl GenericPort {
     /// Create a new connection, trying WebSocket first, then WebSerial.
-    pub async fn new() -> Result<Self, JsValue> {
-        let url = "ws://localhost:8000/api/move/ws/raw/write";
+    ///
+    /// # Arguments
+    /// * `address` - Optional address string. Can be:
+    ///   - Full URL: `ws://192.168.1.100:8000/api/move/ws/raw/write`
+    ///   - IP with port: `192.168.1.100:8000`
+    ///   - IP only: `192.168.1.100` (uses default port 8000)
+    ///   - `None` to use default (localhost:8000)
+    pub async fn new(address: Option<String>) -> Result<Self, JsValue> {
+        let url = Self::build_websocket_url(address);
+        console::log_1(&format!("Attempting WebSocket connection to: {}", url).into());
 
-        match Self::from_websocket(url).await {
+        match Self::from_websocket(&url).await {
             Ok(ws) => Ok(ws),
-            Err(_) => {
-                console::log_1(&"WebSocket failed, trying WebSerial".into());
+            Err(e) => {
+                console::log_1(&format!("WebSocket failed: {:?}, trying WebSerial", e).into());
                 Self::from_webserial().await
+            }
+        }
+    }
+
+    /// Build a WebSocket URL from various address formats.
+    fn build_websocket_url(address: Option<String>) -> String {
+        match address {
+            None => {
+                // Use default localhost
+                format!("ws://{}:{}{}", DEFAULT_WS_HOST, DEFAULT_WS_PORT, DEFAULT_WS_PATH)
+            }
+            Some(addr) => {
+                let addr = addr.trim();
+
+                // Already a full WebSocket URL
+                if addr.starts_with("ws://") || addr.starts_with("wss://") {
+                    return addr.to_string();
+                }
+
+                // Parse the address
+                if addr.contains(':') {
+                    // Has port specified (e.g., "192.168.1.100:9000")
+                    let parts: Vec<&str> = addr.splitn(2, ':').collect();
+                    let host = parts[0];
+                    let port = parts[1].parse::<u16>().unwrap_or(DEFAULT_WS_PORT);
+                    format!("ws://{}:{}{}", host, port, DEFAULT_WS_PATH)
+                } else {
+                    // Just IP/hostname (e.g., "192.168.1.100")
+                    format!("ws://{}:{}{}", addr, DEFAULT_WS_PORT, DEFAULT_WS_PATH)
+                }
             }
         }
     }
