@@ -11,12 +11,13 @@
     <p class="subtitle">Basic control example</p>
 
     <div class="note">
-        <strong>Note:</strong> Use Chrome or Edge browser. Make sure your Reachy Mini is connected via USB or the WebSocket server is running on localhost:8000.
+        <strong>Note:</strong> Use Chrome or Edge browser. Enter an IP address to connect via WebSocket, or leave empty to use WebSerial (USB).
     </div>
 
     <div class="card">
         <h2>Connection</h2>
         <div id="status-indicator" class="status status-disconnected">Disconnected</div>
+        <input type="text" id="address-input" placeholder="IP address (e.g., 192.168.1.100)" style="width: 100%; padding: 10px; margin-bottom: 8px; border: 1px solid #e5e7eb; border-radius: 8px; font-size: 14px;">
         <button id="btn-connect" class="btn-primary">Connect to Robot</button>
     </div>
 

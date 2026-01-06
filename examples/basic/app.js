@@ -1,14 +1,14 @@
-// Import WASM module and functions from unpkg (published version)
+// Import WASM module and functions from npm (published version)
 import init, {
     connect,
-    torque_on,
-    torque_off,
+    enable_torque,
+    disable_torque,
     forward_kinematics,
     inverse_kinematics,
-    record,
-    replay,
+    start_fk_stream,
+    replay_recording,
     stop
-} from 'https://unpkg.com/reachy-mini@0.2.1/index.js';
+} from 'https://unpkg.com/reachy-mini@0.4.0/reachy_mini.js';
 
 // Elements
 const btnConnect = document.getElementById('btn-connect');
@@ -20,12 +20,14 @@ const btnRecord = document.getElementById('btn-record');
 const btnReplay = document.getElementById('btn-replay');
 const btnStop = document.getElementById('btn-stop');
 const statusIndicator = document.getElementById('status-indicator');
+const addressInput = document.getElementById('address-input');
 const output = document.getElementById('output');
 
 let isConnected = false;
 
 // Logging
 function log(message, type = 'info') {
+    console.log(`[${type}] ${message}`);
     const line = document.createElement('div');
     line.className = 'output-line';
     const timestamp = new Date().toLocaleTimeString();
@@ -35,28 +37,44 @@ function log(message, type = 'info') {
     output.scrollTop = output.scrollHeight;
 }
 
-// Initialize WASM (serial helpers auto-exposed to window!)
+// Initialize WASM
 try {
+    console.log('Initializing WASM...');
     await init();
     log('WASM module loaded successfully', 'success');
+    console.log('connect function:', typeof connect);
 } catch (err) {
+    console.error('WASM init error:', err);
     log(`Failed to load WASM module: ${err.message}`, 'error');
-    log('Please make sure you are running this from a local server (not file://)', 'error');
+    log('Make sure you run from a local server: python3 -m http.server 8080', 'error');
 }
 
 // Connection
 btnConnect.addEventListener('click', async () => {
+    console.log('Connect button clicked');
     try {
         btnConnect.disabled = true;
         btnConnect.textContent = 'Connecting...';
-        log('Attempting to connect to Reachy Mini...');
 
-        await connect();
+        // Get address from input (empty string becomes null for Option<String>)
+        const address = addressInput.value.trim() || null;
+        console.log('Address value:', address);
+
+        if (address) {
+            log(`Attempting to connect to Reachy Mini at ${address}...`);
+        } else {
+            log('Attempting to connect to Reachy Mini (WebSerial)...');
+        }
+
+        console.log('Calling connect()...');
+        const result = await connect(address);
+        console.log('Connect result:', result);
 
         isConnected = true;
         statusIndicator.textContent = 'Connected';
         statusIndicator.className = 'status status-connected';
         btnConnect.textContent = 'Connected';
+        addressInput.disabled = true;
 
         // Enable other buttons
         [btnTorqueOn, btnTorqueOff, btnFK, btnIK, btnRecord, btnReplay, btnStop].forEach(btn => {
@@ -65,9 +83,10 @@ btnConnect.addEventListener('click', async () => {
 
         log('Successfully connected to Reachy Mini!', 'success');
     } catch (err) {
+        console.error('Connection error:', err);
         btnConnect.disabled = false;
         btnConnect.textContent = 'Connect to Robot';
-        log(`Connection failed: ${err.message}`, 'error');
+        log(`Connection failed: ${err}`, 'error');
     }
 });
 
@@ -75,20 +94,20 @@ btnConnect.addEventListener('click', async () => {
 btnTorqueOn.addEventListener('click', async () => {
     try {
         log('Enabling torque...');
-        await torque_on();
+        await enable_torque();
         log('Torque enabled', 'success');
     } catch (err) {
-        log(`Error: ${err.message}`, 'error');
+        log(`Error: ${err}`, 'error');
     }
 });
 
 btnTorqueOff.addEventListener('click', async () => {
     try {
         log('Disabling torque...');
-        await torque_off();
+        await disable_torque();
         log('Torque disabled', 'success');
     } catch (err) {
-        log(`Error: ${err.message}`, 'error');
+        log(`Error: ${err}`, 'error');
     }
 });
 
@@ -123,12 +142,12 @@ btnRecord.addEventListener('click', async () => {
     try {
         log('Recording movement for 10 seconds...');
         btnRecord.disabled = true;
-        await record();
+        await start_fk_stream(10000);  // 10 seconds
         btnRecord.disabled = false;
         log('Recording complete', 'success');
     } catch (err) {
         btnRecord.disabled = false;
-        log(`Error: ${err.message}`, 'error');
+        log(`Error: ${err}`, 'error');
     }
 });
 
@@ -136,12 +155,12 @@ btnReplay.addEventListener('click', async () => {
     try {
         log('Replaying recorded movement...');
         btnReplay.disabled = true;
-        await replay();
+        await replay_recording();
         btnReplay.disabled = false;
         log('Replay complete', 'success');
     } catch (err) {
         btnReplay.disabled = false;
-        log(`Error: ${err.message}`, 'error');
+        log(`Error: ${err}`, 'error');
     }
 });
 
