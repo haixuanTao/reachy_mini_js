@@ -1126,9 +1126,7 @@ pub async fn check_and_reboot_motors() -> Result<JsValue, JsValue> {
         .collect();
 
     if !motors_no_response.is_empty() {
-        console::log_1(
-            &format!("Motors did not respond: {:?}", motors_no_response).into(),
-        );
+        console::log_1(&format!("Motors did not respond: {:?}", motors_no_response).into());
     }
 
     // Reboot motors with errors
@@ -1143,7 +1141,12 @@ pub async fn check_and_reboot_motors() -> Result<JsValue, JsValue> {
         console::log_1(&JsValue::from_str("All motors OK, no reboot needed"));
     } else {
         console::log_1(
-            &format!("Rebooted {} motor(s): {:?}", motors_rebooted.len(), motors_rebooted).into(),
+            &format!(
+                "Rebooted {} motor(s): {:?}",
+                motors_rebooted.len(),
+                motors_rebooted
+            )
+            .into(),
         );
     }
 
@@ -1160,13 +1163,21 @@ pub async fn check_and_reboot_motors() -> Result<JsValue, JsValue> {
     for id in &motors_with_errors {
         errors_arr.push(&JsValue::from(*id));
     }
-    js_sys::Reflect::set(&result, &JsValue::from_str("motors_with_errors"), &errors_arr)?;
+    js_sys::Reflect::set(
+        &result,
+        &JsValue::from_str("motors_with_errors"),
+        &errors_arr,
+    )?;
 
     let rebooted_arr = js_sys::Array::new();
     for id in &motors_rebooted {
         rebooted_arr.push(&JsValue::from(*id));
     }
-    js_sys::Reflect::set(&result, &JsValue::from_str("motors_rebooted"), &rebooted_arr)?;
+    js_sys::Reflect::set(
+        &result,
+        &JsValue::from_str("motors_rebooted"),
+        &rebooted_arr,
+    )?;
 
     let no_response_arr = js_sys::Array::new();
     for id in &motors_no_response {
@@ -1667,7 +1678,10 @@ impl GenericPort {
         match address {
             None => {
                 // Use default localhost
-                format!("ws://{}:{}{}", DEFAULT_WS_HOST, DEFAULT_WS_PORT, DEFAULT_WS_PATH)
+                format!(
+                    "ws://{}:{}{}",
+                    DEFAULT_WS_HOST, DEFAULT_WS_PORT, DEFAULT_WS_PATH
+                )
             }
             Some(addr) => {
                 let addr = addr.trim();

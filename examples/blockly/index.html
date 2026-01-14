@@ -16,11 +16,10 @@
       <span id="statusText">Disconnected</span>
     </div>
     <div class="controls">
-      <input type="text" id="robotUrl" placeholder="reachy-mini.local" value="reachy-mini.local" style="width: 140px; padding: 4px 8px; border-radius: 4px; border: 1px solid #555; background: #333; color: #fff; font-size: 12px;">
       <button id="connectBtn" onclick="toggleConnection()">🔌 Connect</button>
       <button onclick="checkMotors()">🔍 Check</button>
-      <button onclick="enableAllTorque()">⚡ Enable All</button>
-      <button onclick="disableAllTorque()">💤 Disable All</button>
+      <button onclick="enableAllTorque()">⚡ Torque On</button>
+      <button onclick="disableAllTorque()">💤 Torque Off</button>
       <button onclick="rebootAllMotors()">🔄 Reboot All</button>
       <button class="primary" onclick="runCode()">▶ Run</button>
       <button class="danger" onclick="stopCode()">⬛ Stop</button>

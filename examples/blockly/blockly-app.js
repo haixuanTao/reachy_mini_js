@@ -94,21 +94,14 @@ function initBlocklyApp() {
       },
 
       // Connection management (uses WASM)
-      connect: function(address) {
+      connect: function() {
         var self = this;
-        // Get address from parameter, input field, or use default
-        if (!address) {
-          var urlInput = document.getElementById('robotUrl');
-          address = urlInput ? urlInput.value.trim() : null;
-        }
-        // Use null for empty string to trigger WASM default behavior
-        if (!address) address = null;
 
-        logConsole('Connecting to ' + (address || 'default') + '...', 'info');
-        return window.wasm.connect(address).then(function(result) {
+        logConsole('Connecting...', 'info');
+        return window.wasm.connect(null).then(function(result) {
           self.connected = true;
           updateConnectionStatus(true);
-          logConsole('Connected to robot at ' + (address || 'default'), 'success');
+          logConsole('Connected to robot', 'success');
           self.startPositionPolling();
           // Auto-check motors after connection
           setTimeout(function() { checkMotors(); }, 500);
@@ -784,7 +777,7 @@ function initBlocklyApp() {
 
     Blockly.Blocks['enable_all'] = {
       init: function() {
-        this.appendDummyInput().appendField('enable all joints');
+        this.appendDummyInput().appendField('torque on');
         this.setPreviousStatement(true, null);
         this.setNextStatement(true, null);
         this.setColour(260);
@@ -796,7 +789,7 @@ function initBlocklyApp() {
 
     Blockly.Blocks['disable_all'] = {
       init: function() {
-        this.appendDummyInput().appendField('disable all joints');
+        this.appendDummyInput().appendField('torque off');
         this.setPreviousStatement(true, null);
         this.setNextStatement(true, null);
         this.setColour(260);

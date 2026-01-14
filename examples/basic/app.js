@@ -20,7 +20,6 @@ const btnRecord = document.getElementById('btn-record');
 const btnReplay = document.getElementById('btn-replay');
 const btnStop = document.getElementById('btn-stop');
 const statusIndicator = document.getElementById('status-indicator');
-const addressInput = document.getElementById('address-input');
 const output = document.getElementById('output');
 
 let isConnected = false;
@@ -56,25 +55,16 @@ btnConnect.addEventListener('click', async () => {
         btnConnect.disabled = true;
         btnConnect.textContent = 'Connecting...';
 
-        // Get address from input (empty string becomes null for Option<String>)
-        const address = addressInput.value.trim() || null;
-        console.log('Address value:', address);
-
-        if (address) {
-            log(`Attempting to connect to Reachy Mini at ${address}...`);
-        } else {
-            log('Attempting to connect to Reachy Mini (WebSerial)...');
-        }
+        log('Attempting to connect to Reachy Mini...');
 
         console.log('Calling connect()...');
-        const result = await connect(address);
+        const result = await connect(null);
         console.log('Connect result:', result);
 
         isConnected = true;
         statusIndicator.textContent = 'Connected';
         statusIndicator.className = 'status status-connected';
         btnConnect.textContent = 'Connected';
-        addressInput.disabled = true;
 
         // Enable other buttons
         [btnTorqueOn, btnTorqueOff, btnFK, btnIK, btnRecord, btnReplay, btnStop].forEach(btn => {
@@ -115,12 +105,12 @@ btnTorqueOff.addEventListener('click', async () => {
 btnFK.addEventListener('click', () => {
     try {
         log('Testing forward kinematics...');
-        const angles = [0, 0, 0, 0, 0, 0, 0, 0]; // All motors at 0 degrees
+        const angles = [0, 0, 0, 0, 0, 0]; // 6 head motors at 0 degrees
         const pose = forward_kinematics(angles);
         log(`Input angles: [${angles.join(', ')}]`);
-        log(`Output pose [x, y, z, roll, pitch, yaw]: [${pose.map(v => v.toFixed(2)).join(', ')}]`, 'success');
+        log(`Output pose [x, y, z, roll, pitch, yaw]: [${[...pose].map(v => v.toFixed(2)).join(', ')}]`, 'success');
     } catch (err) {
-        log(`Error: ${err.message}`, 'error');
+        log(`Error: ${err}`, 'error');
     }
 });
 
@@ -131,9 +121,9 @@ btnIK.addEventListener('click', () => {
         const pose = [0, 0, 0, 0, 0, 0]; // x, y, z, roll, pitch, yaw
         const joints = inverse_kinematics(pose);
         log(`Input pose [x, y, z, roll, pitch, yaw]: [${pose.join(', ')}]`);
-        log(`Output joints (degrees): [${joints.map(v => v.toFixed(2)).join(', ')}]`, 'success');
+        log(`Output joints (degrees): [${[...joints].map(v => v.toFixed(2)).join(', ')}]`, 'success');
     } catch (err) {
-        log(`Error: ${err.message}`, 'error');
+        log(`Error: ${err}`, 'error');
     }
 });
 

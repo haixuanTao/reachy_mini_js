@@ -1,7 +1,6 @@
 // Elements
 const $ = id => document.getElementById(id);
 const toggleConnect = $('toggle-connect');
-const addressInput = $('address-input');
 const toggleTorque = $('toggle-torque');
 const toggleMic = $('toggle-mic');
 const toggleVideo = $('toggle-video');
@@ -118,13 +117,10 @@ btnStop.onclick = async () => {
 toggleConnect.onchange = async (e) => {
     if (e.target.checked) {
         try {
-            const input = addressInput.value.trim();
-            const address = input ? `ws://${input}:8000/api/move/ws/raw/write` : null;
-            await connect(address);
+            await connect(null);
             isConnected = true;
             connectStatus.classList.add('active');
             connectControl.classList.remove('highlight');
-            addressInput.disabled = true;
             [toggleTorque, btnReadPosition, btnRecord, btnReplay].forEach(el => el.disabled = false);
             // [toggleTorque, toggleMic, toggleVideo, btnReadPosition, btnRecord, btnReplay].forEach(el => el.disabled = false);
             addMessage('success', 'Connected', 'Successfully connected to Reachy Mini.');
@@ -138,7 +134,6 @@ toggleConnect.onchange = async (e) => {
         isConnected = false;
         connectStatus.classList.remove('active');
         connectControl.classList.add('highlight');
-        addressInput.disabled = false;
         [toggleTorque, toggleMic, toggleVideo].forEach(el => { el.checked = false; el.disabled = true; });
         [torqueStatus, micStatus, videoStatus].forEach(el => el.classList.remove('active'));
         [btnReadPosition, btnRecord, btnReplay].forEach(el => el.disabled = true);
