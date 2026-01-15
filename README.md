@@ -122,7 +122,7 @@ await disconnect();
 
 - Reachy Mini Lite ( Wireless supported soon ) with 8× Dynamixel XL330
 - USB serial adapter (1,000,000 baud)
-- Or WebSocket at `ws://localhost:8000/api/move/ws/raw/write`
+- Or WebSocket at `ws://127.0.0.1:8000/api/move/ws/raw/write`
 
 ## License
 

@@ -26,7 +26,7 @@
 //!
 //! ## Connection Priority
 //!
-//! 1. WebSocket (`ws://localhost:8000/api/move/ws/raw/write`)
+//! 1. WebSocket (`ws://127.0.0.1:8000/api/move/ws/raw/write`)
 //! 2. WebSerial (falls back if WebSocket unavailable)
 
 mod dynamixel;
@@ -1648,8 +1648,8 @@ const DEFAULT_WS_PORT: u16 = 8000;
 /// Default WebSocket path for raw motor control
 const DEFAULT_WS_PATH: &str = "/api/move/ws/raw/write";
 
-/// Default IP address (localhost)
-const DEFAULT_WS_HOST: &str = "localhost";
+/// Default IP address (127.0.0.1)
+const DEFAULT_WS_HOST: &str = "127.0.0.1";
 
 impl GenericPort {
     /// Create a new connection, trying WebSocket first, then WebSerial.
@@ -1659,7 +1659,7 @@ impl GenericPort {
     ///   - Full URL: `ws://192.168.1.100:8000/api/move/ws/raw/write`
     ///   - IP with port: `192.168.1.100:8000`
     ///   - IP only: `192.168.1.100` (uses default port 8000)
-    ///   - `None` to use default (localhost:8000)
+    ///   - `None` to use default (127.0.0.1:8000)
     pub async fn new(address: Option<String>) -> Result<Self, JsValue> {
         let url = Self::build_websocket_url(address);
         console::log_1(&format!("Attempting WebSocket connection to: {}", url).into());
@@ -1677,7 +1677,7 @@ impl GenericPort {
     fn build_websocket_url(address: Option<String>) -> String {
         match address {
             None => {
-                // Use default localhost
+                // Use default 127.0.0.1
                 format!(
                     "ws://{}:{}{}",
                     DEFAULT_WS_HOST, DEFAULT_WS_PORT, DEFAULT_WS_PATH

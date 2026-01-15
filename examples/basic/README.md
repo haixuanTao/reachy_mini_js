@@ -38,13 +38,13 @@ A simple, **standalone** single-file HTML example demonstrating core Reachy Mini
 3. **Open in browser**:
 
    ```
-   http://localhost:8080/index.html
+   http://127.0.0.1:8080/index.html
    ```
 
 4. **Connect your robot**:
 
    - Ensure Reachy Mini is connected via USB, OR
-   - Start the WebSocket server on `ws://localhost:8000`
+   - Start the WebSocket server on `ws://127.0.0.1:8000`
 
 5. **Click "Connect to Robot"** and start controlling!
 
@@ -82,7 +82,7 @@ No build tools, no npm install, just one HTML file!
 **"WebSerial not available"**
 
 - Use Chrome or Edge browser
-- Check that you're on HTTPS or localhost
+- Check that you're on HTTPS or 127.0.0.1
 
 **"Connection failed"**
 

@@ -8,7 +8,7 @@ describe('JS to Blockly Converter', () => {
     browser = await puppeteer.launch({ headless: true });
     page = await browser.newPage();
     // Load the blockly page - assumes webpack dev server is running
-    await page.goto('http://localhost:8081/blockly.html', { waitUntil: 'networkidle0' });
+    await page.goto('http://127.0.0.1:8081/blockly.html', { waitUntil: 'networkidle0' });
   });
 
   afterAll(async () => {

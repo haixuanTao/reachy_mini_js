@@ -46,7 +46,7 @@ npm run build
 ## Browser Requirements
 
 - Chrome 89+ or Edge 89+ (for WebSerial support)
-- Must be served over HTTPS or localhost
+- Must be served over HTTPS or 127.0.0.1
 
 ## Related Examples
 

@@ -7,7 +7,7 @@
     // ========== Settings ==========
     var aiSettings = {
         provider: 'anthropic',
-        endpoint: 'http://localhost:11434',
+        endpoint: 'http://127.0.0.1:11434',
         apiKey: '',
         model: 'claude-sonnet-4-20250514'
     };
@@ -49,7 +49,7 @@
         if (provider === 'ollama') {
             endpointGroup.style.display = 'block';
             apiKeyGroup.style.display = 'none';
-            document.getElementById('settingsEndpoint').placeholder = 'http://localhost:11434';
+            document.getElementById('settingsEndpoint').placeholder = 'http://127.0.0.1:11434';
             modelInput.placeholder = 'llama3.2';
         } else if (provider === 'openai') {
             endpointGroup.style.display = 'none';
@@ -349,7 +349,7 @@
     }
 
     async function callOllama(systemPrompt, messages) {
-        var endpoint = aiSettings.endpoint || 'http://localhost:11434';
+        var endpoint = aiSettings.endpoint || 'http://127.0.0.1:11434';
         var model = aiSettings.model || 'llama3.2';
 
         var ollamaMessages = [{ role: 'system', content: systemPrompt }];
