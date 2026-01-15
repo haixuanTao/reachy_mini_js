@@ -2,7 +2,7 @@
 [package]
 name = "reachy-mini"
 description = "Reachy Mini Wasm API!"
-version = "0.5.2"
+version = "0.5.3"
 authors = ["Xavier Tao, tao.xavier@outlook.com"]
 categories = ["wasm"]
 readme = "README.md"
