@@ -45,7 +45,7 @@ import init, {
   // Motor diagnostics - check and reboot
   get_motor_errors,
   check_and_reboot_motors,
-} from 'https://unpkg.com/reachy-mini@0.5.2/index.js';
+} from 'https://unpkg.com/reachy-mini@0.5.3/index.js';
 
 // ============ Serial Port Helpers (required by WASM for WebSerial fallback) ============
 let cachedPort = null;

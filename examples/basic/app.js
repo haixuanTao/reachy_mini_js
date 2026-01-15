@@ -8,7 +8,7 @@ import init, {
     start_fk_stream,
     replay_recording,
     stop
-} from 'https://unpkg.com/reachy-mini@0.5.2/index.js';
+} from 'https://unpkg.com/reachy-mini@0.5.3/index.js';
 
 // Elements
 const btnConnect = document.getElementById('btn-connect');

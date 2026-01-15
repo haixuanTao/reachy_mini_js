@@ -1,4 +1,4 @@
-import init, { start_fk_stream, connect, torque_off, torque_on, replay_recording, stop, forward_kinematics, inverse_kinematics } from 'https://unpkg.com/reachy-mini@0.5.2/index.js';
+import init, { start_fk_stream, connect, torque_off, torque_on, replay_recording, stop, forward_kinematics, inverse_kinematics } from 'https://unpkg.com/reachy-mini@0.5.3/index.js';
 
 // WebSerial helpers (required by WASM for WebSerial fallback)
 let cachedPort = null;
