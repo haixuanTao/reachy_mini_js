@@ -1652,6 +1652,16 @@ const DEFAULT_WS_PATH: &str = "/api/move/ws/raw/write";
 const DEFAULT_WS_HOST: &str = "127.0.0.1";
 
 impl GenericPort {
+    /// Check if the browser supports WebSerial (Chrome/Chromium-based browsers).
+    fn is_webserial_supported() -> bool {
+        if let Some(window) = web_sys::window() {
+            if let Ok(navigator) = js_sys::Reflect::get(&window, &"navigator".into()) {
+                return js_sys::Reflect::has(&navigator, &"serial".into()).unwrap_or(false);
+            }
+        }
+        false
+    }
+
     /// Create a new connection, trying WebSocket first, then WebSerial.
     ///
     /// # Arguments
@@ -1661,14 +1671,29 @@ impl GenericPort {
     ///   - IP only: `192.168.1.100` (uses default port 8000)
     ///   - `None` to use default (127.0.0.1:8000)
     pub async fn new(address: Option<String>) -> Result<Self, JsValue> {
-        let url = Self::build_websocket_url(address);
+        let url = Self::build_websocket_url(address.clone());
         console::log_1(&format!("Attempting WebSocket connection to: {}", url).into());
 
         match Self::from_websocket(&url).await {
             Ok(ws) => Ok(ws),
             Err(e) => {
-                console::log_1(&format!("WebSocket failed: {:?}, trying WebSerial", e).into());
-                Self::from_webserial().await
+                // Only try WebSerial on browsers that support it (Chrome/Chromium)
+                if Self::is_webserial_supported() {
+                    console::log_1(&format!("WebSocket failed: {:?}, trying WebSerial", e).into());
+                    Self::from_webserial().await
+                } else {
+                    // Non-Chrome browser: show cleaner error about WebSocket connection
+                    let is_localhost = url.contains("127.0.0.1") || url.contains("localhost");
+                    let error_msg = if is_localhost {
+                        format!(
+                            "Could not connect to {}. Make sure the Reachy Mini desktop app is running.",
+                            url
+                        )
+                    } else {
+                        format!("Could not connect to {}", url)
+                    };
+                    Err(JsValue::from_str(&error_msg))
+                }
             }
         }
     }
