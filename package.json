@@ -1,7 +1,7 @@
 {
   "author": "You <you@example.com>",
   "name": "reachy-mini",
-  "version": "0.5.3",
+  "version": "0.6.0",
   "scripts": {
     "build": "rimraf dist pkg && webpack && node scripts/copy-helpers.js",
     "start": "rimraf dist pkg && webpack serve --open --port 8081",

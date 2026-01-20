@@ -7,8 +7,16 @@ import init, {
     inverse_kinematics,
     start_fk_stream,
     replay_recording,
-    stop
-} from 'https://unpkg.com/reachy-mini@0.5.3/index.js';
+    stop,
+    // Video Stream (optional - for future use)
+    connect_video_stream,
+    disconnect_video_stream,
+    is_using_camera_fallback,
+    // Audio Stream (optional - for future use)
+    connect_audio_stream,
+    disconnect_audio_stream,
+    is_using_microphone_fallback,
+} from 'https://unpkg.com/reachy-mini@0.6.0/index.js';
 
 // Elements
 const btnConnect = document.getElementById('btn-connect');

@@ -45,7 +45,21 @@ import init, {
   // Motor diagnostics - check and reboot
   get_motor_errors,
   check_and_reboot_motors,
-} from 'https://unpkg.com/reachy-mini@0.5.3/index.js';
+  // Video Stream
+  connect_video_stream,
+  disconnect_video_stream,
+  is_using_camera_fallback,
+  read_video_frame,
+  capture_camera_frame,
+  get_latest_video_frame,
+  // Audio Stream
+  connect_audio_stream,
+  disconnect_audio_stream,
+  is_using_microphone_fallback,
+  read_audio_chunk,
+  get_latest_audio_chunk,
+  send_audio_chunk,
+} from 'https://unpkg.com/reachy-mini@0.6.0/index.js';
 
 // ============ Serial Port Helpers (required by WASM for WebSerial fallback) ============
 let cachedPort = null;
@@ -129,13 +143,27 @@ window.wasm = {
   // Check and reboot
   get_motor_errors,
   check_and_reboot_motors,
+  // Video Stream
+  connect_video_stream,
+  disconnect_video_stream,
+  is_using_camera_fallback,
+  read_video_frame,
+  capture_camera_frame,
+  get_latest_video_frame,
+  // Audio Stream
+  connect_audio_stream,
+  disconnect_audio_stream,
+  is_using_microphone_fallback,
+  read_audio_chunk,
+  get_latest_audio_chunk,
+  send_audio_chunk,
 };
 
 // Legacy: expose kinematics functions directly for backward compatibility
 window.forward_kinematics = forward_kinematics;
 window.inverse_kinematics = inverse_kinematics;
 
-console.log('WASM module loaded (reachy-mini v0.5.1)');
+console.log('WASM module loaded (reachy-mini v0.6.0)');
 
 // Dispatch event to signal WASM is ready
 window.dispatchEvent(new CustomEvent('wasm-ready'));

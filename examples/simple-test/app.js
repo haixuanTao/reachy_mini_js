@@ -153,24 +153,55 @@ toggleTorque.onchange = async (e) => {
     }
 };
 
-toggleMic.onchange = (e) => {
-    if (!isConnected) { e.target.checked = false; return; }
-    micStatus.classList.toggle('active', e.target.checked);
-    addMessage(e.target.checked ? 'success' : 'info',
-        e.target.checked ? 'Microphone Active' : 'Microphone Stopped',
-        e.target.checked ? 'Audio input is now streaming.' : 'Audio input has been stopped.');
+toggleMic.onchange = async (e) => {
+    if (e.target.checked) {
+        if (typeof window.startAudioStream !== 'function') {
+            e.target.checked = false;
+            addMessage('error', 'Not Ready', 'WASM module is still loading.');
+            return;
+        }
+        try {
+            const source = await window.startAudioStream();
+            micStatus.classList.add('active');
+            addMessage('success', 'Microphone Active',
+                source === 'microphone'
+                    ? 'Using browser microphone (WebSocket unavailable).'
+                    : 'Audio input streaming via WebSocket.');
+        } catch (err) {
+            e.target.checked = false;
+            addMessage('error', 'Audio Error', err.message || 'Failed to start audio.');
+        }
+    } else {
+        if (typeof window.stopAudioStream === 'function') window.stopAudioStream();
+        micStatus.classList.remove('active');
+        addMessage('info', 'Microphone Stopped', 'Audio input stopped.');
+    }
 };
 
-toggleVideo.onchange = (e) => {
-    if (!isConnected) { e.target.checked = false; return; }
-    videoStatus.classList.toggle('active', e.target.checked);
-    addMessage(e.target.checked ? 'success' : 'info',
-        e.target.checked ? 'Video Stream Active' : 'Video Stream Stopped',
-        e.target.checked ? 'Video is now streaming.' : 'Video stream has been stopped.');
+toggleVideo.onchange = async (e) => {
+    if (e.target.checked) {
+        if (typeof window.startVideoStream !== 'function') {
+            e.target.checked = false;
+            addMessage('error', 'Not Ready', 'WASM module is still loading.');
+            return;
+        }
+        try {
+            const source = await window.startVideoStream();
+            videoStatus.classList.add('active');
+            addMessage('success', 'Video Stream Active',
+                source === 'camera'
+                    ? 'Using browser camera (WebSocket unavailable).'
+                    : 'Video streaming via WebSocket.');
+        } catch (err) {
+            e.target.checked = false;
+            addMessage('error', 'Video Error', err.message || 'Failed to start video.');
+        }
+    } else {
+        if (typeof window.stopVideoStream === 'function') window.stopVideoStream();
+        videoStatus.classList.remove('active');
+        addMessage('info', 'Video Stopped', 'Video stream stopped.');
+    }
 };
-
-// Implement these functions
-async function disconnect() {}
 
 // Welcome
 addMessage('system', 'Welcome', 'Toggle "Connect" to start. Please use Chrome Browser and diactivate Reachy Mini Daemon ( for now )');
