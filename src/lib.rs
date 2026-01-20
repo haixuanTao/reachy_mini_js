@@ -29,8 +29,14 @@
 //! 1. WebSocket (`ws://127.0.0.1:8000/api/move/ws/raw/write`)
 //! 2. WebSerial (falls back if WebSocket unavailable)
 
+mod audio_stream;
 mod dynamixel;
 mod kinematics;
+mod video_stream;
+
+// Re-export video and audio stream APIs
+pub use audio_stream::*;
+pub use video_stream::*;
 
 use std::cell::RefCell;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -1662,6 +1668,27 @@ impl GenericPort {
         false
     }
 
+    /// Check if the browser is Safari.
+    /// Safari has known issues connecting to localhost from HTTPS websites.
+    fn is_safari() -> bool {
+        if let Some(window) = web_sys::window() {
+            if let Ok(navigator) = js_sys::Reflect::get(&window, &"navigator".into()) {
+                if let Ok(user_agent) = js_sys::Reflect::get(&navigator, &"userAgent".into()) {
+                    if let Some(ua_str) = user_agent.as_string() {
+                        let ua_lower = ua_str.to_lowercase();
+                        // Safari includes "safari" but Chrome also includes "safari" in its UA
+                        // So we check for Safari but exclude Chrome and Android
+                        return ua_lower.contains("safari")
+                            && !ua_lower.contains("chrome")
+                            && !ua_lower.contains("chromium")
+                            && !ua_lower.contains("android");
+                    }
+                }
+            }
+        }
+        false
+    }
+
     /// Create a new connection, trying WebSocket first, then WebSerial.
     ///
     /// # Arguments
@@ -1682,6 +1709,14 @@ impl GenericPort {
                     console::log_1(&format!("WebSocket failed: {:?}, trying WebSerial", e).into());
                     Self::from_webserial().await
                 } else {
+                    // Check if this is Safari - provide specific error message with underlying error
+                    if Self::is_safari() {
+                        return Err(JsValue::from_str(&format!(
+                            "Safari has known issues connecting to localhost from HTTPS websites. Please use Chrome or Firefox for the best experience. (Error: {:?})",
+                            e
+                        )));
+                    }
+
                     // Non-Chrome browser: show cleaner error about WebSocket connection
                     let is_localhost = url.contains("127.0.0.1") || url.contains("localhost");
                     let error_msg = if is_localhost {

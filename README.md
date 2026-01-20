@@ -77,6 +77,21 @@ import init, {
   stop,
   clear_recording,
   get_recording_length,
+
+  // Video Stream
+  connect_video_stream,
+  disconnect_video_stream,
+  is_video_stream_connected,
+  read_video_frame,
+  get_latest_video_frame,
+
+  // Audio Stream
+  connect_audio_stream,
+  disconnect_audio_stream,
+  is_audio_stream_connected,
+  read_audio_chunk,
+  get_latest_audio_chunk,
+  send_audio_chunk,
 } from "https://unpkg.com/reachy-mini@0.3.1";
 
 await init();
@@ -108,6 +123,21 @@ const xyz = forward_kinematics([0, 0, 0, 0, 0, 0]);
 await start_fk_stream(3000); // record 3s
 await replay_recording();
 
+// Video streaming
+await connect_video_stream(); // or connect_video_stream("192.168.1.100")
+const frame = await read_video_frame(); // Uint8Array (JPEG, 80% quality)
+if (frame) {
+  const blob = new Blob([frame], { type: "image/jpeg" });
+  document.getElementById("video").src = URL.createObjectURL(blob);
+}
+disconnect_video_stream();
+
+// Audio streaming (bidirectional)
+await connect_audio_stream();
+const audio = await read_audio_chunk(); // Float32Array [-1.0, 1.0]
+await send_audio_chunk(new Float32Array([...])); // Send audio to robot
+disconnect_audio_stream();
+
 await disable_torque();
 await disconnect();
 ```
@@ -123,6 +153,14 @@ await disconnect();
 - Reachy Mini Lite ( Wireless supported soon ) with 8× Dynamixel XL330
 - USB serial adapter (1,000,000 baud)
 - Or WebSocket at `ws://127.0.0.1:8000/api/move/ws/raw/write`
+
+## WebSocket Endpoints
+
+| Endpoint | Description |
+|----------|-------------|
+| `/api/move/ws/raw/write` | Motor control (used by `connect()`) |
+| `/api/video/ws` | Video stream (JPEG frames) |
+| `/api/audio/ws` | Bidirectional audio stream (Float32 little-endian)
 
 ## License
 
