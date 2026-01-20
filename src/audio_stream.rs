@@ -1,7 +1,8 @@
 //! Audio Stream API for Reachy Mini
 //!
-//! This module provides bidirectional WebSocket-based audio streaming
-//! functionality to send and receive audio with the robot.
+//! This module provides bidirectional audio streaming functionality with automatic fallback:
+//! 1. First tries WebSocket connection to the robot
+//! 2. Falls back to browser microphone via getUserMedia if WebSocket fails
 
 use std::cell::RefCell;
 use std::convert::TryInto;
@@ -11,7 +12,8 @@ use futures_util::{SinkExt, StreamExt, TryStreamExt};
 use gloo::net::websocket::futures::WebSocket;
 use gloo::net::websocket::Message;
 use wasm_bindgen::prelude::*;
-use web_sys::console;
+use wasm_bindgen_futures::JsFuture;
+use web_sys::{console, MediaStream, MediaStreamConstraints};
 
 use crate::sleep;
 
@@ -26,20 +28,35 @@ const DEFAULT_AUDIO_WS_PATH: &str = "/api/audio/ws";
 
 thread_local! {
     /// Global audio stream connection
-    static AUDIO_STREAM: RefCell<Option<AudioStream>> = RefCell::new(None);
+    static AUDIO_STREAM: RefCell<Option<AudioStreamSource>> = RefCell::new(None);
 }
 
-/// Audio stream wrapper for bidirectional audio with the robot.
-struct AudioStream {
+/// Audio source type - either WebSocket or local microphone
+enum AudioStreamSource {
+    WebSocket(WebSocketAudioStream),
+    Microphone(MicrophoneStream),
+}
+
+/// WebSocket-based audio stream
+struct WebSocketAudioStream {
     sender: Arc<Mutex<futures_util::stream::SplitSink<WebSocket, Message>>>,
     receiver: Arc<Mutex<futures_util::stream::SplitStream<WebSocket>>>,
     latest_audio: Arc<Mutex<Option<Vec<f32>>>>,
 }
 
-impl AudioStream {
-    /// Create a new audio stream connection.
+/// Browser microphone-based audio stream using AudioWorklet/ScriptProcessor
+struct MicrophoneStream {
+    _media_stream: MediaStream,
+    audio_context: web_sys::AudioContext,
+    latest_audio: Arc<Mutex<Option<Vec<f32>>>>,
+    // We'll use a ScriptProcessorNode for simplicity (AudioWorklet requires more setup)
+    _script_processor: web_sys::ScriptProcessorNode,
+    _closure: Closure<dyn FnMut(web_sys::AudioProcessingEvent)>,
+}
+
+impl WebSocketAudioStream {
     async fn new(address: Option<String>) -> Result<Self, JsValue> {
-        let url = Self::build_url(address);
+        let url = build_ws_url(address);
         console::log_1(&format!("Connecting to audio stream: {}", url).into());
 
         let ws = WebSocket::open(&url)
@@ -63,38 +80,133 @@ impl AudioStream {
         })
     }
 
-    fn build_url(address: Option<String>) -> String {
-        match address {
-            None => format!(
-                "ws://{}:{}{}",
-                DEFAULT_WS_HOST, DEFAULT_WS_PORT, DEFAULT_AUDIO_WS_PATH
-            ),
-            Some(addr) => {
-                let addr = addr.trim();
-                if addr.starts_with("ws://") || addr.starts_with("wss://") {
-                    return addr.to_string();
-                }
-                if addr.contains(':') {
-                    let parts: Vec<&str> = addr.splitn(2, ':').collect();
-                    let host = parts[0];
-                    let port = parts[1].parse::<u16>().unwrap_or(DEFAULT_WS_PORT);
-                    format!("ws://{}:{}{}", host, port, DEFAULT_AUDIO_WS_PATH)
-                } else {
-                    format!("ws://{}:{}{}", addr, DEFAULT_WS_PORT, DEFAULT_AUDIO_WS_PATH)
-                }
-            }
-        }
-    }
-
-    /// Get the latest cached audio chunk.
     fn get_latest(&self) -> Option<Vec<f32>> {
         self.latest_audio.try_lock().ok().and_then(|a| a.clone())
     }
 }
 
-/// Connect to the audio stream.
+impl MicrophoneStream {
+    async fn new() -> Result<Self, JsValue> {
+        console::log_1(&JsValue::from_str(
+            "WebSocket failed, falling back to browser microphone...",
+        ));
+
+        let window = web_sys::window().ok_or("No window")?;
+        let navigator = window.navigator();
+        let media_devices = navigator
+            .media_devices()
+            .map_err(|_| "No media devices")?;
+
+        // Request microphone access
+        let constraints = MediaStreamConstraints::new();
+        constraints.set_video(&JsValue::FALSE);
+        constraints.set_audio(&JsValue::TRUE);
+
+        let promise = media_devices
+            .get_user_media_with_constraints(&constraints)
+            .map_err(|e| JsValue::from_str(&format!("getUserMedia failed: {:?}", e)))?;
+
+        let media_stream: MediaStream = JsFuture::from(promise).await?.dyn_into()?;
+
+        // Create AudioContext
+        let audio_context = web_sys::AudioContext::new()
+            .map_err(|e| JsValue::from_str(&format!("AudioContext failed: {:?}", e)))?;
+
+        // Create source from microphone stream
+        let source = audio_context
+            .create_media_stream_source(&media_stream)
+            .map_err(|e| JsValue::from_str(&format!("createMediaStreamSource failed: {:?}", e)))?;
+
+        // Create ScriptProcessorNode for capturing audio data
+        // Buffer size of 4096 samples, mono input/output
+        let script_processor = audio_context
+            .create_script_processor_with_buffer_size_and_number_of_input_channels_and_number_of_output_channels(
+                4096, 1, 1,
+            )
+            .map_err(|e| JsValue::from_str(&format!("createScriptProcessor failed: {:?}", e)))?;
+
+        // Connect source -> script processor -> destination (to keep it running)
+        source
+            .connect_with_audio_node(&script_processor)
+            .map_err(|e| JsValue::from_str(&format!("connect source failed: {:?}", e)))?;
+
+        script_processor
+            .connect_with_audio_node(&audio_context.destination())
+            .map_err(|e| JsValue::from_str(&format!("connect destination failed: {:?}", e)))?;
+
+        // Set up audio processing callback
+        let latest_audio: Arc<Mutex<Option<Vec<f32>>>> = Arc::new(Mutex::new(None));
+        let latest_audio_clone = latest_audio.clone();
+
+        let closure = Closure::new(move |event: web_sys::AudioProcessingEvent| {
+            if let Ok(input_buffer) = event.input_buffer() {
+                if let Ok(channel_data) = input_buffer.get_channel_data(0) {
+                    let samples: Vec<f32> = channel_data.to_vec();
+                    if let Ok(mut cache) = latest_audio_clone.try_lock() {
+                        *cache = Some(samples);
+                    }
+                }
+            }
+        });
+
+        script_processor.set_onaudioprocess(Some(closure.as_ref().unchecked_ref()));
+
+        console::log_1(&JsValue::from_str("Microphone fallback connected"));
+
+        Ok(Self {
+            _media_stream: media_stream,
+            audio_context,
+            latest_audio,
+            _script_processor: script_processor,
+            _closure: closure,
+        })
+    }
+
+    fn get_latest(&self) -> Option<Vec<f32>> {
+        self.latest_audio.try_lock().ok().and_then(|a| a.clone())
+    }
+}
+
+impl Drop for MicrophoneStream {
+    fn drop(&mut self) {
+        // Close audio context
+        let _ = self.audio_context.close();
+        // Stop all tracks
+        for track in self._media_stream.get_tracks() {
+            if let Ok(track) = track.dyn_into::<web_sys::MediaStreamTrack>() {
+                track.stop();
+            }
+        }
+    }
+}
+
+fn build_ws_url(address: Option<String>) -> String {
+    match address {
+        None => format!(
+            "ws://{}:{}{}",
+            DEFAULT_WS_HOST, DEFAULT_WS_PORT, DEFAULT_AUDIO_WS_PATH
+        ),
+        Some(addr) => {
+            let addr = addr.trim();
+            if addr.starts_with("ws://") || addr.starts_with("wss://") {
+                return addr.to_string();
+            }
+            if addr.contains(':') {
+                let parts: Vec<&str> = addr.splitn(2, ':').collect();
+                let host = parts[0];
+                let port = parts[1].parse::<u16>().unwrap_or(DEFAULT_WS_PORT);
+                format!("ws://{}:{}{}", host, port, DEFAULT_AUDIO_WS_PATH)
+            } else {
+                format!("ws://{}:{}{}", addr, DEFAULT_WS_PORT, DEFAULT_AUDIO_WS_PATH)
+            }
+        }
+    }
+}
+
+/// Connect to the audio stream with automatic microphone fallback.
 ///
-/// Establishes a bidirectional WebSocket connection for audio communication with the robot.
+/// Tries to establish a WebSocket connection to the robot first.
+/// If that fails, automatically falls back to the browser's microphone.
 ///
 /// # Arguments
 /// * `address` - Optional WebSocket address. Can be:
@@ -111,20 +223,45 @@ impl AudioStream {
 /// ```
 #[wasm_bindgen]
 pub async fn connect_audio_stream(address: Option<String>) -> Result<bool, JsValue> {
-    let stream = AudioStream::new(address).await?;
-    AUDIO_STREAM.with_borrow_mut(|s| *s = Some(stream));
-    console::log_1(&JsValue::from_str("Connected to audio stream"));
-    Ok(true)
+    // Try WebSocket first
+    match WebSocketAudioStream::new(address).await {
+        Ok(ws_stream) => {
+            AUDIO_STREAM.with_borrow_mut(|s| *s = Some(AudioStreamSource::WebSocket(ws_stream)));
+            console::log_1(&JsValue::from_str("Connected to audio stream via WebSocket"));
+            Ok(true)
+        }
+        Err(ws_err) => {
+            console::log_1(&format!("WebSocket failed: {:?}", ws_err).into());
+
+            // Fall back to microphone
+            let mic_stream = MicrophoneStream::new().await?;
+            AUDIO_STREAM.with_borrow_mut(|s| *s = Some(AudioStreamSource::Microphone(mic_stream)));
+            console::log_1(&JsValue::from_str(
+                "Connected to audio stream via browser microphone (fallback)",
+            ));
+            Ok(true)
+        }
+    }
 }
 
 /// Check if connected to the audio stream.
 ///
 /// # Returns
-/// * `true` if connected
+/// * `true` if connected (via WebSocket or microphone)
 /// * `false` if not connected
 #[wasm_bindgen]
 pub fn is_audio_stream_connected() -> bool {
     AUDIO_STREAM.with_borrow(|s| s.is_some())
+}
+
+/// Check if using microphone fallback.
+///
+/// # Returns
+/// * `true` if using browser microphone
+/// * `false` if using WebSocket or not connected
+#[wasm_bindgen]
+pub fn is_using_microphone_fallback() -> bool {
+    AUDIO_STREAM.with_borrow(|s| matches!(s.as_ref(), Some(AudioStreamSource::Microphone(_))))
 }
 
 /// Read the next audio chunk from the stream.
@@ -147,40 +284,66 @@ pub fn is_audio_stream_connected() -> bool {
 /// ```
 #[wasm_bindgen]
 pub async fn read_audio_chunk() -> Result<Option<Vec<f32>>, JsValue> {
-    let (receiver, latest_audio) = AUDIO_STREAM
-        .with_borrow(|s| {
-            s.as_ref()
-                .map(|a| (a.receiver.clone(), a.latest_audio.clone()))
+    let source_type = AUDIO_STREAM.with_borrow(|s| {
+        s.as_ref().map(|source| match source {
+            AudioStreamSource::WebSocket(_) => "websocket",
+            AudioStreamSource::Microphone(_) => "microphone",
         })
-        .ok_or_else(|| {
-            JsValue::from_str("Not connected to audio stream. Call connect_audio_stream() first.")
-        })?;
+    });
 
-    let mut rx = receiver
-        .try_lock()
-        .map_err(|e| JsValue::from_str(&format!("Lock failed: {:?}", e)))?;
-
-    match rx.try_next().await {
-        Ok(Some(Message::Bytes(bytes))) => {
-            // Convert bytes to f32 samples (assuming little-endian float32)
-            let samples: Vec<f32> = bytes
-                .chunks_exact(4)
-                .map(|chunk| {
-                    let arr: [u8; 4] = chunk.try_into().unwrap();
-                    f32::from_le_bytes(arr)
+    match source_type {
+        None => Err(JsValue::from_str(
+            "Not connected to audio stream. Call connect_audio_stream() first.",
+        )),
+        Some("websocket") => {
+            let (receiver, latest_audio) = AUDIO_STREAM
+                .with_borrow(|s| {
+                    if let Some(AudioStreamSource::WebSocket(ws)) = s.as_ref() {
+                        Some((ws.receiver.clone(), ws.latest_audio.clone()))
+                    } else {
+                        None
+                    }
                 })
-                .collect();
+                .ok_or_else(|| JsValue::from_str("WebSocket stream not available"))?;
 
-            // Update cache
-            if let Ok(mut cache) = latest_audio.try_lock() {
-                *cache = Some(samples.clone());
+            let mut rx = receiver
+                .try_lock()
+                .map_err(|e| JsValue::from_str(&format!("Lock failed: {:?}", e)))?;
+
+            match rx.try_next().await {
+                Ok(Some(Message::Bytes(bytes))) => {
+                    // Convert bytes to f32 samples (assuming little-endian float32)
+                    let samples: Vec<f32> = bytes
+                        .chunks_exact(4)
+                        .map(|chunk| {
+                            let arr: [u8; 4] = chunk.try_into().unwrap();
+                            f32::from_le_bytes(arr)
+                        })
+                        .collect();
+
+                    // Update cache
+                    if let Ok(mut cache) = latest_audio.try_lock() {
+                        *cache = Some(samples.clone());
+                    }
+
+                    Ok(Some(samples))
+                }
+                Ok(Some(_)) => Ok(None),
+                Ok(None) => Err(JsValue::from_str("Audio stream closed")),
+                Err(e) => Err(JsValue::from_str(&format!("Read error: {:?}", e))),
             }
-
-            Ok(Some(samples))
         }
-        Ok(Some(_)) => Ok(None),
-        Ok(None) => Err(JsValue::from_str("Audio stream closed")),
-        Err(e) => Err(JsValue::from_str(&format!("Read error: {:?}", e))),
+        Some("microphone") => {
+            // For microphone, return the latest captured audio
+            AUDIO_STREAM.with_borrow(|s| {
+                if let Some(AudioStreamSource::Microphone(mic)) = s.as_ref() {
+                    Ok(mic.get_latest())
+                } else {
+                    Ok(None)
+                }
+            })
+        }
+        Some(_) => Err(JsValue::from_str("Unknown audio source")),
     }
 }
 
@@ -201,13 +364,20 @@ pub async fn read_audio_chunk() -> Result<Option<Vec<f32>>, JsValue> {
 /// ```
 #[wasm_bindgen]
 pub fn get_latest_audio_chunk() -> Option<Vec<f32>> {
-    AUDIO_STREAM.with_borrow(|s| s.as_ref().and_then(|a| a.get_latest()))
+    AUDIO_STREAM.with_borrow(|s| {
+        s.as_ref().and_then(|source| match source {
+            AudioStreamSource::WebSocket(ws) => ws.get_latest(),
+            AudioStreamSource::Microphone(mic) => mic.get_latest(),
+        })
+    })
 }
 
 /// Send an audio chunk to the robot.
 ///
 /// Sends audio samples to the robot for playback or processing.
 /// Audio should be float32 samples in the range [-1.0, 1.0].
+///
+/// Note: This only works when connected via WebSocket, not microphone fallback.
 ///
 /// # Arguments
 /// * `samples` - Float32Array of audio samples
@@ -222,9 +392,17 @@ pub fn get_latest_audio_chunk() -> Option<Vec<f32>> {
 #[wasm_bindgen]
 pub async fn send_audio_chunk(samples: Vec<f32>) -> Result<(), JsValue> {
     let sender = AUDIO_STREAM
-        .with_borrow(|s| s.as_ref().map(|a| a.sender.clone()))
+        .with_borrow(|s| {
+            if let Some(AudioStreamSource::WebSocket(ws)) = s.as_ref() {
+                Some(ws.sender.clone())
+            } else {
+                None
+            }
+        })
         .ok_or_else(|| {
-            JsValue::from_str("Not connected to audio stream. Call connect_audio_stream() first.")
+            JsValue::from_str(
+                "Cannot send audio: not connected via WebSocket (microphone fallback is receive-only)",
+            )
         })?;
 
     // Convert f32 samples to bytes (little-endian)

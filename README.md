@@ -78,17 +78,20 @@ import init, {
   clear_recording,
   get_recording_length,
 
-  // Video Stream
+  // Video Stream (with browser camera fallback)
   connect_video_stream,
   disconnect_video_stream,
   is_video_stream_connected,
+  is_using_camera_fallback,
   read_video_frame,
   get_latest_video_frame,
+  capture_camera_frame,
 
-  // Audio Stream
+  // Audio Stream (with browser microphone fallback)
   connect_audio_stream,
   disconnect_audio_stream,
   is_audio_stream_connected,
+  is_using_microphone_fallback,
   read_audio_chunk,
   get_latest_audio_chunk,
   send_audio_chunk,
@@ -123,19 +126,32 @@ const xyz = forward_kinematics([0, 0, 0, 0, 0, 0]);
 await start_fk_stream(3000); // record 3s
 await replay_recording();
 
-// Video streaming
-await connect_video_stream(); // or connect_video_stream("192.168.1.100")
-const frame = await read_video_frame(); // Uint8Array (JPEG, 80% quality)
+// Video streaming (auto-fallback to browser camera if WebSocket fails)
+await connect_video_stream(); // Tries WebSocket, falls back to getUserMedia
+if (is_using_camera_fallback()) {
+  // Using browser camera - need to capture frames manually
+  const frame = await capture_camera_frame();
+} else {
+  // Using WebSocket - frames arrive automatically
+  const frame = await read_video_frame();
+}
+const frame = get_latest_video_frame(); // Get cached frame (non-blocking)
 if (frame) {
   const blob = new Blob([frame], { type: "image/jpeg" });
   document.getElementById("video").src = URL.createObjectURL(blob);
 }
 disconnect_video_stream();
 
-// Audio streaming (bidirectional)
-await connect_audio_stream();
-const audio = await read_audio_chunk(); // Float32Array [-1.0, 1.0]
-await send_audio_chunk(new Float32Array([...])); // Send audio to robot
+// Audio streaming (auto-fallback to browser microphone if WebSocket fails)
+await connect_audio_stream(); // Tries WebSocket, falls back to getUserMedia
+if (is_using_microphone_fallback()) {
+  // Using browser mic - receive only, can't send
+  const audio = await read_audio_chunk();
+} else {
+  // Using WebSocket - bidirectional
+  const audio = await read_audio_chunk();
+  await send_audio_chunk(new Float32Array([...])); // Send audio to robot
+}
 disconnect_audio_stream();
 
 await disable_torque();

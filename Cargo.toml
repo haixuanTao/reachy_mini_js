@@ -30,6 +30,7 @@ wasm-bindgen = "0.2.45"
 # code size when deploying.
 console_error_panic_hook = { version = "0.1.7", optional = true }
 futures-util = "0.3.31"
+futures-channel = "0.3.31"
 # wasm-bindgen-futures = "0.4.55"
 # `wee_alloc` is a tiny allocator for wasm that is only ~1K in code size
 # compared to the default allocator's ~10K. However, it is slower than the default
@@ -61,6 +62,25 @@ features = [
     "Window",
     "WorkerGlobalScope",
     "WorkerNavigator",
+    # Camera/Video features
+    "MediaDevices",
+    "MediaStream",
+    "MediaStreamConstraints",
+    "MediaStreamTrack",
+    "HtmlCanvasElement",
+    "HtmlVideoElement",
+    "HtmlMediaElement",
+    "CanvasRenderingContext2d",
+    "Blob",
+    "CssStyleDeclaration",
+    # Audio features
+    "AudioContext",
+    "AudioNode",
+    "AudioDestinationNode",
+    "MediaStreamAudioSourceNode",
+    "ScriptProcessorNode",
+    "AudioBuffer",
+    "AudioProcessingEvent",
 ]
 version = "0.3.22"
 

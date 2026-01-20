@@ -272,6 +272,88 @@
         }
 
         .action-btn-stop:hover { background: #fee2e2; border-color: #fca5a5; }
+
+        /* Video Preview */
+        .video-container {
+            display: none;
+            margin-bottom: 24px;
+            border-radius: 12px;
+            overflow: hidden;
+            background: var(--gray-100);
+            border: 1px solid var(--gray-200);
+        }
+
+        .video-container img {
+            width: 100%;
+            height: auto;
+            display: block;
+        }
+
+        .video-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 8px 12px;
+            background: var(--gray-50);
+            border-bottom: 1px solid var(--gray-200);
+        }
+
+        .video-title {
+            font-size: 13px;
+            font-weight: 600;
+            color: var(--gray-600);
+        }
+
+        .video-badge {
+            font-size: 11px;
+            padding: 2px 8px;
+            border-radius: 4px;
+            background: var(--gray-200);
+            color: var(--gray-600);
+        }
+
+        .video-badge.fallback {
+            background: #fef3c7;
+            color: #92400e;
+        }
+
+        /* Audio Level */
+        .audio-level-container {
+            display: none;
+            margin-bottom: 24px;
+            padding: 16px;
+            background: var(--gray-50);
+            border: 1px solid var(--gray-200);
+            border-radius: 12px;
+        }
+
+        .audio-level-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 8px;
+        }
+
+        .audio-level-title {
+            font-size: 13px;
+            font-weight: 600;
+            color: var(--gray-600);
+        }
+
+        .audio-level-track {
+            height: 8px;
+            background: var(--gray-200);
+            border-radius: 4px;
+            overflow: hidden;
+        }
+
+        .audio-level-bar {
+            height: 100%;
+            width: 0%;
+            background: linear-gradient(90deg, var(--green-500), #fbbf24);
+            border-radius: 4px;
+            transition: width 0.1s ease-out;
+        }
     </style>
 </head>
 <body>
@@ -309,7 +391,7 @@
                     Mic
                 </span>
                 <label class="toggle-switch">
-                    <input type="checkbox" id="toggle-mic" disabled>
+                    <input type="checkbox" id="toggle-mic">
                     <span class="toggle-slider"></span>
                 </label>
             </div>
@@ -322,7 +404,7 @@
                     Video
                 </span>
                 <label class="toggle-switch">
-                    <input type="checkbox" id="toggle-video" disabled>
+                    <input type="checkbox" id="toggle-video">
                     <span class="toggle-slider"></span>
                 </label>
             </div>
@@ -330,6 +412,26 @@
     </header>
 
     <main class="main">
+        <!-- Video Preview -->
+        <div class="video-container" id="video-container">
+            <div class="video-header">
+                <span class="video-title">Video Stream</span>
+                <span class="video-badge" id="video-badge">WebSocket</span>
+            </div>
+            <img id="video-preview" alt="Video preview">
+        </div>
+
+        <!-- Audio Level -->
+        <div class="audio-level-container" id="audio-container">
+            <div class="audio-level-header">
+                <span class="audio-level-title">Audio Input</span>
+                <span class="video-badge" id="audio-badge">WebSocket</span>
+            </div>
+            <div class="audio-level-track">
+                <div class="audio-level-bar" id="audio-level"></div>
+            </div>
+        </div>
+
         <div class="messages-container" id="messages-container"></div>
 
         <div class="action-bar">
@@ -465,7 +567,6 @@
                     connectStatus.classList.add('active');
                     connectControl.classList.remove('highlight');
                     [toggleTorque, btnReadPosition, btnRecord, btnReplay].forEach(el => el.disabled = false);
-                    // [toggleTorque, toggleMic, toggleVideo, btnReadPosition, btnRecord, btnReplay].forEach(el => el.disabled = false);
                     addMessage('success', 'Connected', 'Successfully connected to Reachy Mini.');
                 } catch (err) {
                     e.target.checked = false;
@@ -477,8 +578,9 @@
                 isConnected = false;
                 connectStatus.classList.remove('active');
                 connectControl.classList.add('highlight');
-                [toggleTorque, toggleMic, toggleVideo].forEach(el => { el.checked = false; el.disabled = true; });
-                [torqueStatus, micStatus, videoStatus].forEach(el => el.classList.remove('active'));
+                toggleTorque.checked = false;
+                toggleTorque.disabled = true;
+                torqueStatus.classList.remove('active');
                 [btnReadPosition, btnRecord, btnReplay].forEach(el => el.disabled = true);
                 addMessage('info', 'Disconnected', 'Disconnected from Reachy Mini.');
             }
@@ -496,27 +598,80 @@
             }
         };
 
-        toggleMic.onchange = (e) => {
-            if (!isConnected) { e.target.checked = false; return; }
-            micStatus.classList.toggle('active', e.target.checked);
-            addMessage(e.target.checked ? 'success' : 'info', 
-                e.target.checked ? 'Microphone Active' : 'Microphone Stopped',
-                e.target.checked ? 'Audio input is now streaming.' : 'Audio input has been stopped.');
+        toggleMic.onchange = async (e) => {
+            if (e.target.checked) {
+                if (typeof window.startAudioStream !== 'function') {
+                    e.target.checked = false;
+                    addMessage('error', 'Not Ready', 'WASM module is still loading. Please wait.');
+                    return;
+                }
+                try {
+                    const source = await window.startAudioStream();
+                    micStatus.classList.add('active');
+                    const audioBadge = $('audio-badge');
+                    const audioContainer = $('audio-container');
+                    if (audioBadge) {
+                        audioBadge.textContent = source === 'microphone' ? 'Browser Mic' : 'WebSocket';
+                        audioBadge.classList.toggle('fallback', source === 'microphone');
+                    }
+                    if (audioContainer) {
+                        audioContainer.style.display = 'block';
+                    }
+                    addMessage('success', 'Microphone Active',
+                        source === 'microphone'
+                            ? 'Using browser microphone (WebSocket unavailable).'
+                            : 'Audio input is now streaming via WebSocket.');
+                } catch (err) {
+                    e.target.checked = false;
+                    addMessage('error', 'Audio Error', err.message || 'Failed to start audio stream.');
+                }
+            } else {
+                if (typeof window.stopAudioStream === 'function') {
+                    window.stopAudioStream();
+                }
+                micStatus.classList.remove('active');
+                const audioContainer = $('audio-container');
+                if (audioContainer) {
+                    audioContainer.style.display = 'none';
+                }
+                addMessage('info', 'Microphone Stopped', 'Audio input has been stopped.');
+            }
         };
 
-        toggleVideo.onchange = (e) => {
-            if (!isConnected) { e.target.checked = false; return; }
-            videoStatus.classList.toggle('active', e.target.checked);
-            addMessage(e.target.checked ? 'success' : 'info',
-                e.target.checked ? 'Video Stream Active' : 'Video Stream Stopped',
-                e.target.checked ? 'Video is now streaming.' : 'Video stream has been stopped.');
+        toggleVideo.onchange = async (e) => {
+            if (e.target.checked) {
+                if (typeof window.startVideoStream !== 'function') {
+                    e.target.checked = false;
+                    addMessage('error', 'Not Ready', 'WASM module is still loading. Please wait.');
+                    return;
+                }
+                try {
+                    const source = await window.startVideoStream();
+                    videoStatus.classList.add('active');
+                    const videoBadge = $('video-badge');
+                    if (videoBadge) {
+                        videoBadge.textContent = source === 'camera' ? 'Browser Camera' : 'WebSocket';
+                        videoBadge.classList.toggle('fallback', source === 'camera');
+                    }
+                    addMessage('success', 'Video Stream Active',
+                        source === 'camera'
+                            ? 'Using browser camera (WebSocket unavailable).'
+                            : 'Video is now streaming via WebSocket.');
+                } catch (err) {
+                    e.target.checked = false;
+                    addMessage('error', 'Video Error', err.message || 'Failed to start video stream.');
+                }
+            } else {
+                if (typeof window.stopVideoStream === 'function') {
+                    window.stopVideoStream();
+                }
+                videoStatus.classList.remove('active');
+                addMessage('info', 'Video Stream Stopped', 'Video stream has been stopped.');
+            }
         };
-
-        // Implement these functions
-        async function disconnect() {}
 
         // Welcome
-        addMessage('system', 'Welcome', 'Toggle "Connect" to start. Please use Chrome Browser and diactivate Reachy Mini Daemon ( for now )');
+        addMessage('system', 'Welcome', 'Toggle "Connect" to start. Please use Chrome Browser.');
     </script>
     <script src="index.js"></script>
 </body>
