@@ -59,7 +59,7 @@ import init, {
   read_audio_chunk,
   get_latest_audio_chunk,
   send_audio_chunk,
-} from 'https://unpkg.com/reachy-mini@0.6.0/index.js';
+} from 'https://unpkg.com/reachy-mini@0.6.1/index.js';
 
 // ============ Serial Port Helpers (required by WASM for WebSerial fallback) ============
 let cachedPort = null;
@@ -163,7 +163,7 @@ window.wasm = {
 window.forward_kinematics = forward_kinematics;
 window.inverse_kinematics = inverse_kinematics;
 
-console.log('WASM module loaded (reachy-mini v0.6.0)');
+console.log('WASM module loaded (reachy-mini v0.6.1)');
 
 // Dispatch event to signal WASM is ready
 window.dispatchEvent(new CustomEvent('wasm-ready'));

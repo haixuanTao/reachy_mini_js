@@ -21,7 +21,7 @@ import init, {
   is_using_microphone_fallback,
   read_audio_chunk,
   get_latest_audio_chunk,
-} from 'https://unpkg.com/reachy-mini@0.6.0/index.js';
+} from 'https://unpkg.com/reachy-mini@0.6.1/index.js';
 
 // WebSerial helpers (required by WASM for WebSerial fallback)
 let cachedPort = null;

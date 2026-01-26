@@ -1,11 +1,12 @@
 {
   "author": "You <you@example.com>",
   "name": "reachy-mini",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "scripts": {
     "build": "rimraf dist pkg && webpack && node scripts/copy-helpers.js",
     "start": "rimraf dist pkg && webpack serve --open --port 8081",
     "test": "jest tests/jsToBlockTree.test.js --verbose",
+    "publish": "npm run build && cd pkg && wasm-pack publish",
     "test:wasm": "cargo test && wasm-pack test --headless",
     "test:e2e": "jest tests/jsToBlocks.test.js --verbose",
     "test:kinematics": "echo 'Open http://127.0.0.1:8080/test-kinematics.html to run kinematics tests' && npm start"

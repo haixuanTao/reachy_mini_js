@@ -16,7 +16,7 @@ import init, {
     connect_audio_stream,
     disconnect_audio_stream,
     is_using_microphone_fallback,
-} from 'https://unpkg.com/reachy-mini@0.6.0/index.js';
+} from 'https://unpkg.com/reachy-mini@0.6.1/index.js';
 
 // Elements
 const btnConnect = document.getElementById('btn-connect');
