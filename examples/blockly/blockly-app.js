@@ -1,5 +1,8 @@
 // Wait for WASM module to be ready before initializing
 function initBlocklyApp() {
+    // Enable the connect button now that WASM is loaded
+    document.getElementById('connectBtn').disabled = false;
+
     // ========== Global State ==========
     var stopRequested = false;
     var programTimer = 0;
