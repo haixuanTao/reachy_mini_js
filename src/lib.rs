@@ -30,8 +30,8 @@
 //! 2. WebSerial (falls back if WebSocket unavailable)
 
 mod audio_stream;
-mod dynamixel;
-mod kinematics;
+pub mod dynamixel;
+pub mod kinematics;
 mod video_stream;
 
 // Re-export video and audio stream APIs

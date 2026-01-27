@@ -9,7 +9,7 @@ readme = "README.md"
 edition = "2018"
 
 [lib]
-crate-type = ["cdylib"]
+crate-type = ["cdylib", "rlib"]
 
 [profile.release]
 # This makes the compiled code faster and smaller, but it makes compiling slower,
@@ -96,3 +96,4 @@ console_error_panic_hook = "0.1.5"
 wasm-bindgen-test = "0.2.45"
 futures = "0.1.27"
 js-sys = "0.3.22"
+tungstenite = "0.24"
